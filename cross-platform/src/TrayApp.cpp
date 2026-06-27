@@ -218,18 +218,21 @@ QMenu* TrayApp::buildMenu() {
     // QIcon::fromTheme(...) returns null on macOS (no freedesktop theme), so paint
     // small template glyphs instead — gives each item a subtle native-style icon.
     m_captureAction->setIcon(makeMenuGlyph(MenuGlyph::Camera));
+    m_captureAction->setIconVisibleInMenu(true);   // macOS hides menu-item icons by default
     connect(m_captureAction, &QAction::triggered, this, &TrayApp::startCapture);
 
     // Settings — keyEquivalent deliberately omitted (would only work with the
     // menu open, never globally), same reasoning as the source.
     QAction* settings = menu->addAction(Loc::t(QStringLiteral("menu.settings")));
     settings->setIcon(makeMenuGlyph(MenuGlyph::Gear));
+    settings->setIconVisibleInMenu(true);
     connect(settings, &QAction::triggered, this, &TrayApp::openSettings);
 
     menu->addSeparator();
 
     QAction* quit = menu->addAction(Loc::t(QStringLiteral("menu.quit")));
     quit->setIcon(makeMenuGlyph(MenuGlyph::Power));
+    quit->setIconVisibleInMenu(true);
     connect(quit, &QAction::triggered, qApp, &QApplication::quit);
 
     return menu;
