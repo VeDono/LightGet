@@ -932,8 +932,13 @@ bool SettingsWindow::isLaunchAtLoginEnabled() const {
     const QString dir = QDir::homePath() + "/.config/autostart";
     return QFileInfo::exists(dir + "/LightGet.desktop");
 #else
-    // macOS: SMAppService status would be queried in an .mm shim; default false.
+    // macOS: SMAppService status via the native shim (macOS 13+).
+#if defined(HAVE_MAC_NATIVE)
+    extern bool MacNative_isLaunchAtLoginEnabled();
+    return MacNative_isLaunchAtLoginEnabled();
+#else
     return false;
+#endif
 #endif
 }
 
@@ -971,10 +976,13 @@ bool SettingsWindow::setLaunchAtLogin(bool enabled) {
         return QFile::remove(file);
     }
 #else
-    // macOS: real impl lives in an SMAppService .mm shim (register/unregister).
-    // TODO(platform): wire SMAppService.mainApp.register()/unregister(). For now
-    // report failure so the UI surfaces the explanatory alert as in the source.
+    // macOS: SMAppService register/unregister via the native shim (macOS 13+).
+#if defined(HAVE_MAC_NATIVE)
+    extern bool MacNative_setLaunchAtLogin(bool);
+    return MacNative_setLaunchAtLogin(enabled);
+#else
     Q_UNUSED(enabled);
     return false;
+#endif
 #endif
 }

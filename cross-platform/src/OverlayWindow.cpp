@@ -60,8 +60,18 @@ OverlayWindow::OverlayWindow(const QImage& screenshot, QScreen* screen, QWidget*
     , m_screen(screen)
     , m_color(QColor(Qt::red))   // NSColor.systemRed default
 {
-    // Frameless, translucent, always-on-top tool window (DESIGN.md §2).
+    // Frameless, translucent, always-on-top overlay (DESIGN.md §2).
+    // macOS: it MUST be a real Window, not Qt::Tool. A Tool maps to an NSPanel
+    // that an accessory (LSUIElement) app cannot make the key window, so the
+    // shield-level overlay would receive NO keyboard (Esc dead) and no reliable
+    // mouse — the dimmed screen gets trapped until reboot. A frameless Qt::Window
+    // can become key (made key by OverlayWindow_applyShieldLevel). Elsewhere keep
+    // Qt::Tool so the transient overlay stays out of the taskbar.
+#if defined(Q_OS_MACOS)
+    setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Window);
+#else
     setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool);
+#endif
     setAttribute(Qt::WA_TranslucentBackground, true);
     setAttribute(Qt::WA_NoSystemBackground, true);
 

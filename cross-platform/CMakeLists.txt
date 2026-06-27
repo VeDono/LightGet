@@ -185,7 +185,8 @@ elseif(APPLE)
     # CGShieldingWindowLevel / CGDisplay* calls.
     find_library(APPKIT_LIB AppKit)
     find_library(APPSERVICES_LIB ApplicationServices)
-    target_link_libraries(LightGet PRIVATE ${APPKIT_LIB} ${APPSERVICES_LIB})
+    find_library(SERVICEMGMT_LIB ServiceManagement)   # SMAppService (launch-at-login)
+    target_link_libraries(LightGet PRIVATE ${APPKIT_LIB} ${APPSERVICES_LIB} ${SERVICEMGMT_LIB})
 
     # -----------------------------------------------------------------------
     # Faithful native macOS pieces (OPT-IN; HAVE_MAC_NATIVE is undefined here).

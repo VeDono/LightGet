@@ -22,6 +22,7 @@
 
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <ServiceManagement/ServiceManagement.h>
 #include <CoreGraphics/CoreGraphics.h>
 
 // Pull in Qt's real WId typedef so the symbol mangling here matches the call
@@ -53,6 +54,15 @@ void OverlayWindow_applyShieldLevel(WId win) {
     // shield level, and bring it to the very front of its level.
     [window setHidesOnDeactivate:NO];
     [window orderFrontRegardless];
+    // CRITICAL: actually make the overlay the KEY window so it receives keyboard
+    // (Esc / ⌘C) and mouse events. An accessory (LSUIElement) app is not "active"
+    // by default, so activate the app first, THEN make this window key. Without
+    // this the shield-level overlay shows but gets no events — the user can't
+    // select or press Esc, and the dimmed screen is effectively trapped.
+    // (Requires the Qt overlay to be a real Window, not Qt::Tool, so its NSWindow
+    // can become key — see OverlayWindow.cpp.)
+    [NSApp activateIgnoringOtherApps:YES];
+    [window makeKeyAndOrderFront:nil];
 }
 
 // ---------------------------------------------------------------------------
@@ -123,4 +133,31 @@ bool MacNative_hasScreenCapturePermission() {
 // ---------------------------------------------------------------------------
 void MacNative_requestScreenCapturePermission() {
     (void)CGRequestScreenCaptureAccess();
+}
+
+// ---------------------------------------------------------------------------
+// Launch-at-login via SMAppService (macOS 13+). The app registers ITSELF as a
+// login item (no separate helper). Works reliably only when the app is in
+// /Applications. Returns false on macOS < 13 (caller surfaces the explanation).
+// ---------------------------------------------------------------------------
+bool MacNative_isLaunchAtLoginEnabled() {
+    if (@available(macOS 13.0, *)) {
+        return [[SMAppService mainAppService] status] == SMAppServiceStatusEnabled;
+    }
+    return false;
+}
+
+bool MacNative_setLaunchAtLogin(bool enabled) {
+    if (@available(macOS 13.0, *)) {
+        NSError* err = nil;
+        SMAppService* svc = [SMAppService mainAppService];
+        BOOL ok = enabled ? [svc registerAndReturnError:&err]
+                          : [svc unregisterAndReturnError:&err];
+        if (!ok) {
+            NSLog(@"LightGet: SMAppService %@ failed: %@",
+                  enabled ? @"register" : @"unregister", err);
+        }
+        return ok ? true : false;
+    }
+    return false;
 }
