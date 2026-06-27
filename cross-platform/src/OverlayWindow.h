@@ -42,6 +42,7 @@ class ToolbarView;
 class TextInspectorView;
 class QTextEdit;
 class QWidget;
+class QPushButton;
 
 class OverlayWindow : public QWidget {
     Q_OBJECT
@@ -75,6 +76,9 @@ protected:
 
     // --- Keyboard ---
     void keyPressEvent(QKeyEvent*) override;
+
+    // --- Inline text editor event interception (Enter/Shift+Enter/Esc/focus-out) ---
+    bool eventFilter(QObject* obj, QEvent* ev) override;
 
 private:
     // ----- Drag state machine (Spec 3 §2.4) -----
@@ -197,6 +201,11 @@ private:
     QWidget* m_editControls = nullptr;       // ✓/✗ container
     QWidget* m_alignControls = nullptr;      // alignment container
     TextAlign m_currentTextAlignment = TextAlign::Left;
+    // PRIVATE additions (Qt-specific): alignment buttons for live highlight,
+    // and a guard so the editor's focus-out commit does not re-enter while we
+    // are tearing the editor down.
+    QVector<QPair<TextAlign, QPushButton*>> m_alignButtons;
+    bool m_endingTextEditing = false;
 
     qreal m_textResizeStartSize = 18.0;
     QPointF m_textResizeStartPoint;

@@ -45,6 +45,12 @@ public:
 
     bool registered() const { return m_registered; }
 
+    // Lets the single process-wide native event handler/filter (defined in
+    // GlobalHotkey.cpp) emit activated() on the owning instance after routing
+    // the OS event by id. A Qt signal can only be emitted from within its own
+    // class, so this thin forwarder is the bridge. Not for general call-site use.
+    void emitActivated() { emit activated(); }
+
 signals:
     // Emitted on each hotkey press. Wire to TrayApp::startCapture().
     void activated();

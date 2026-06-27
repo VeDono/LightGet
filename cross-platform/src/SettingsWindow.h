@@ -65,8 +65,13 @@ private:
     void onLaunchAtLoginToggled(bool on);    // platform autostart; revert+alert on fail
     QString saveFolderTitle() const;
 
+    // Launch-at-login platform shim (registry / autostart / SMAppService).
+    bool isLaunchAtLoginEnabled() const;
+    bool setLaunchAtLogin(bool enabled);     // returns false on failure (alert+revert)
+
     QTabWidget* m_tabs = nullptr;
     HotkeyRecorder* m_recorder = nullptr;    // reused member across rebuilds
+    QWidget* m_aboutContainer = nullptr;     // About section widget (rebuilt each reload)
 
     // Preset bar icons (asset names mirroring SF Symbols), exactly 5 (Spec 5 §5.2).
     // {"scissors","camera.viewfinder","crop","rectangle.dashed","paintbrush.pointed.fill"}
@@ -99,6 +104,9 @@ private:
     static uint32_t carbonModifiers(Qt::KeyboardModifiers mods);
     // Build "⌃⌥⇧⌘<KEY>" display string.
     static QString displayString(Qt::KeyboardModifiers mods, const QString& keyText);
+    // Translate a Qt::Key (+ native VK fallback) to a Carbon virtual-key code,
+    // so the persisted hotKeyCode matches the macOS defaults file (kVK_*).
+    static uint32_t carbonKeyCode(int qtKey, quint32 nativeVK);
 
     bool m_recording = false;
 };

@@ -85,6 +85,29 @@ elseif(APPLE)
         ${COREGRAPHICS_LIB}
         ${SCREENCAPTUREKIT_LIB}
     )
+
+    # -----------------------------------------------------------------------
+    # Faithful native macOS pieces (OPT-IN; HAVE_MAC_NATIVE is undefined here).
+    #
+    # By default this is a plain pure-Qt build: the overlay is a normal topmost
+    # Qt::Tool window and capture goes through QScreen, so `cmake build` links on
+    # macOS TODAY without any Objective-C++ translation units. The cursor/focus
+    # and CGShieldingWindowLevel hooks (TrayApp_forceCursorVisible,
+    # TrayApp_recordFrontmostApp, TrayApp_restoreApp, OverlayWindow_applyShieldLevel)
+    # are gated behind `#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)` and
+    # stay no-ops while HAVE_MAC_NATIVE is absent.
+    #
+    # To enable the native pieces once the .mm files exist:
+    #   1. Either add them to LIGHTGET_SOURCES (the set() near the top, before
+    #      add_executable), e.g. src/mac/TrayApp_mac.mm and
+    #      src/mac/OverlayWindow_mac.mm, OR attach them to the target here:
+    #        target_sources(LightGet PRIVATE src/mac/TrayApp_mac.mm
+    #                                        src/mac/OverlayWindow_mac.mm)
+    #      (CMake compiles .mm as Objective-C++ automatically.)
+    #   2. Define the flag so the native branches are compiled in:
+    #        target_compile_definitions(LightGet PRIVATE HAVE_MAC_NATIVE=1)
+    # -----------------------------------------------------------------------
+    # target_compile_definitions(LightGet PRIVATE HAVE_MAC_NATIVE=1)
     # LSUIElement (accessory / no Dock icon) must be set in the app bundle's
     # Info.plist. Provide resources/Info.plist and uncomment:
     # set_target_properties(LightGet PROPERTIES
