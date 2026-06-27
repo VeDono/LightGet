@@ -14,17 +14,21 @@
 // selectToolRequested, etc.). All buttons must NOT take keyboard focus
 // (setFocusPolicy(Qt::NoFocus)) so overlay shortcuts keep flowing.
 //
-// LAYOUT CONSTANTS (must match for pixel-exact widths — see Spec 4 §2.4/§3.3):
-//   Toolbar: buttonSize=30, pad=6, height ALWAYS 42; tool/action advance +32;
-//            color wells 18x18 circles (radius 9) at y=12, advance +22;
-//            +6 separator before palette and before actions.
+// LAYOUT CONSTANTS — restyled to the LightGet "Main toolbar" design
+// (/private/tmp/lightget_design/toolbar_canvas.html, section 1):
+//   Toolbar: buttonSize=40, radius 11, gap=3, panel padding 8 (v) / 10 (h);
+//            tool/action glyph color #d4d5da, hover bg white@9%;
+//            selected tool = full systemBlue(#0A84FF) fill + white glyph;
+//            color wells 26px circles, gap 4, vertically centered;
+//            selected well = white outer ring + checkmark; unselected = inset ring;
+//            1px vertical separators (white@10%, height 26, margin 7) bracket
+//            the palette group; close action uses red(#FF6961) glyph + red hover.
 //   Inspector: swatch 16x16 (rounded square radius 4), gap 4, label 16;
 //              column start x=26, advance +20; height 28 (1 row) / 48 (2 rows).
 //   Pop animation: 180ms easeOut, scale 1.0->peak->1.0 about center,
 //                  peak 1.10 (toolbar) / 1.18 (inspector), auto-reset.
-//   Panel bg toolbar rgba(31,31,31,242); inspector rgba(31,31,31,245);
-//   panel border white@15% 0.5px; swatch border white@50% 1px;
-//   selected tool bg systemBlue #007AFF; checkmark black on light swatch / white on dark.
+//   Panel surface #242429; panel border white@9%; radius 16 (toolbar) / 8 (inspector);
+//   swatch border white@50% 1px; checkmark black on light swatch / white on dark.
 
 #include "Annotation.h"
 
@@ -83,17 +87,24 @@ protected:
 private:
     void buildButtons();                        // layout algorithm (Spec 4 §2.4)
 
-    static constexpr int kButtonSize = 30;
-    // Glyph icon canvas. The visible glyph size is set by makeGlyph's 0.26 inset
-    // (glyph ≈ 28*0.48 ≈ 13.4px), tuned to match the native SF-symbol toolbar
-    // (native glyphs are ~12-16px in a 30px button with thin strokes). The button
-    // margin + the glyph's transparent inset keep the click pop (1.10x) from
-    // clipping; the selected highlight is drawn inset in PopButton::paintEvent.
-    static constexpr int kIconSize = 28;
-    static constexpr int kPad = 6;
+    // Design (toolbar_canvas.html §1): 40px buttons, radius 11, 3px gap, panel
+    // padding 8 (vertical) / 10 (horizontal). The glyph icon canvas matches the
+    // button so the procedural glyphs (tuned to the native SF symbols) keep their
+    // relative footprint; the button margin + each glyph's transparent inset keep
+    // the click pop (1.10x) from clipping, and the hover/selected fills are drawn
+    // inset in PopButton::paintEvent so they scale cleanly with the pop.
+    static constexpr int kButtonSize = 40;
+    static constexpr int kIconSize   = 40;
+    static constexpr int kPadV       = 8;    // panel vertical padding
+    static constexpr int kPadH       = 10;   // panel horizontal padding
+    static constexpr int kGap        = 3;    // gap between adjacent buttons
+    static constexpr int kBtnRadius  = 11;   // button corner radius
+    static constexpr int kSwatch     = 26;   // color well diameter
+    static constexpr int kSwatchGap  = 4;    // gap between color wells
 
     QHash<Tool, QPushButton*> m_toolButtons;
     QVector<QPair<QColor, QPushButton*>> m_colorButtons;
+    QVector<int> m_separatorX;   // x-centres of the 1px group dividers (design §1)
     Tool m_selectedTool = Tool::Select;
     int m_selectedColor = 0;
 };

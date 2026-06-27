@@ -24,6 +24,7 @@
     <file alias="assets/checkmark.png">assets/checkmark.png</file>
     <file alias="assets/nosign.png">assets/nosign.png</file>
     <file alias="assets/scissors.png">assets/scissors.png</file>
+    <file alias="assets/feather.png">assets/feather.png</file>
     <file alias="assets/camera.viewfinder.png">assets/camera.viewfinder.png</file>
     <file alias="assets/crop.png">assets/crop.png</file>
     <file alias="assets/paintbrush.pointed.fill.png">assets/paintbrush.pointed.fill.png</file>

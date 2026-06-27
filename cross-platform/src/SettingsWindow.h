@@ -4,15 +4,17 @@
 //
 // Source: SettingsWindowController.swift (Spec 5 §4-§13).
 //
-// Fixed-size 440x580 QDialog, not resizable, persists across open/close (reused
+// Fixed-size QDialog, not resizable, persists across open/close (reused
 // instance). Two tabs only (General, Features). NO Apply/OK — every change
 // persists to Settings immediately. A full rebuild (reloadUI) happens on
 // language change / any reset / choosing folder or custom icon.
 //
-// COORDINATE NOTE: the Swift layout used bottom-left origin with hand-computed
-// y values. In Qt prefer QVBoxLayout/QFormLayout/QGridLayout — the absolute
-// y math from the spec is documentation, not a layout requirement. The About
-// section's social card + copyright row should still match visually.
+// VISUAL: restyled to the "LightGet — Direction B" design (settings_window.dc.html
+// / settings_canvas.html): centered rounded tabs, grouped white "card" sections
+// with flat left-aligned rows, brand accent #0A84FF, round per-setting reset
+// buttons, painted toggle switches + checkboxes. Colors derive from a palette-
+// based token set so both LIGHT and DARK themes look right. Layout/styling only —
+// every setting, signal/slot, handler and localization stays intact.
 //
 // Three callbacks the owner (TrayApp) wires to:
 //   hotKeyChanged  -> re-register global hotkey + update tray "Capture" text
@@ -23,10 +25,28 @@
 
 #include <QDialog>
 #include <QPushButton>
+#include <QAbstractButton>
+#include <QColor>
 #include <cstdint>
+#include <functional>
 
-class QTabWidget;
+class QStackedWidget;
 class HotkeyRecorder;
+class QFrame;
+class QVBoxLayout;
+
+// ---------------------------------------------------------------------------
+// Design tokens — resolved per theme (light / dark) from the window palette.
+// Mirrors the --c-* variables in settings_window.dc.html / settings_canvas.html.
+// ---------------------------------------------------------------------------
+struct DesignTokens {
+    bool   dark = false;
+    QColor bg, card, control, controlFill, border, separator;
+    QColor text, text2, text3;
+    QColor accent, accentWeak, link;
+    QColor toggleOff, toggleOn, knob;
+    QColor resetFg, icon, checkOn;
+};
 
 class SettingsWindow : public QDialog {
     Q_OBJECT
@@ -40,6 +60,9 @@ signals:
     void languageChanged();
     void barIconChanged();
 
+protected:
+    void changeEvent(QEvent* e) override;   // rebuild on palette/theme switch
+
 private:
     // Reset targets (raw int parity with Swift ResetTarget). language=0 is a
     // dead UI case (no button) but kept for parity.
@@ -50,7 +73,7 @@ private:
     void buildUI();
     QWidget* buildGeneralTab();
     QWidget* buildFeaturesTab();
-    void addAboutSection(QWidget* generalTab);
+    void addAboutSection(QVBoxLayout* generalCol);
 
     QPushButton* makeResetButton(ResetTarget target);
     void resetTapped(ResetTarget target);   // confirm dialog -> reset -> reloadUI
@@ -69,12 +92,79 @@ private:
     bool isLaunchAtLoginEnabled() const;
     bool setLaunchAtLogin(bool enabled);     // returns false on failure (alert+revert)
 
-    QTabWidget* m_tabs = nullptr;
+    // --- Styling helpers (Direction B) ---
+    DesignTokens m_tk;                       // current theme tokens
+    void resolveTokens();                    // (re)compute tokens from palette
+    QFrame* makeCard();                      // empty rounded card container
+    QFrame* makeSeparator();                 // 1px horizontal row separator
+    // A standard card row: label on the left, control right-aligned, optional
+    // round reset button in a fixed-width trailing slot. Pass nullptr reset to
+    // leave the slot empty (keeps rows visually aligned).
+    QWidget* makeRow(const QString& label, QWidget* control, QPushButton* reset);
+    // A full-width toggle row (label stretches, switch trails, optional reset).
+    QWidget* makeToggleRow(const QString& label, QWidget* toggle, QPushButton* reset);
+
+    QStackedWidget* m_stack = nullptr;       // General / Features pages
+    QPushButton* m_tabGeneral = nullptr;     // centered rounded tab buttons
+    QPushButton* m_tabFeatures = nullptr;
+    int m_currentTab = 0;                    // 0 = general, 1 = features
     HotkeyRecorder* m_recorder = nullptr;    // reused member across rebuilds
-    QWidget* m_aboutContainer = nullptr;     // About section widget (rebuilt each reload)
 
     // Preset bar icons (asset names mirroring SF Symbols), exactly 5 (Spec 5 §5.2).
     // {"scissors","camera.viewfinder","crop","rectangle.dashed","paintbrush.pointed.fill"}
+};
+
+// ---------------------------------------------------------------------------
+// ToggleSwitch — painted on/off pill switch (QAbstractButton), matching the
+// design's 38x22 track + 18px knob, animated slide on toggle. Colors come from
+// DesignTokens so both themes read correctly. Used for the boolean settings
+// (Downscale, Launch at login) that the native UI rendered as checkboxes — the
+// underlying signal is the same toggled(bool).
+// ---------------------------------------------------------------------------
+class ToggleSwitch : public QAbstractButton {
+    Q_OBJECT
+    Q_PROPERTY(qreal knobPos READ knobPos WRITE setKnobPos)
+public:
+    explicit ToggleSwitch(const DesignTokens& tk, QWidget* parent = nullptr);
+    QSize sizeHint() const override;
+    qreal knobPos() const { return m_knobPos; }
+    void setKnobPos(qreal v);
+
+protected:
+    void paintEvent(QPaintEvent*) override;
+    void enterEvent(QEnterEvent*) override;
+    void leaveEvent(QEvent*) override;
+
+private:
+    DesignTokens m_tk;
+    qreal m_knobPos = 0.0;   // 0 = off (left), 1 = on (right)
+    bool  m_hover = false;
+};
+
+// ---------------------------------------------------------------------------
+// CheckRow — a full-width clickable row with a painted rounded checkbox (blue
+// square + checkmark when on) and a label, plus an optional trailing preview
+// widget. Matches the Features-tab rows in the design. Emits toggled(bool); the
+// caller wires the persistence handler exactly as the old QCheckBox did.
+// ---------------------------------------------------------------------------
+class CheckRow : public QAbstractButton {
+    Q_OBJECT
+public:
+    CheckRow(const DesignTokens& tk, const QString& label, bool checkedState,
+             QWidget* trailing = nullptr, QWidget* parent = nullptr);
+    QSize sizeHint() const override;
+
+protected:
+    void paintEvent(QPaintEvent*) override;
+    void enterEvent(QEnterEvent*) override;
+    void leaveEvent(QEvent*) override;
+    void resizeEvent(QResizeEvent*) override;
+
+private:
+    DesignTokens m_tk;
+    QString  m_label;
+    QWidget* m_trailing = nullptr;
+    bool     m_hover = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -91,6 +181,10 @@ class HotkeyRecorder : public QPushButton {
     Q_OBJECT
 public:
     explicit HotkeyRecorder(QWidget* parent = nullptr);
+
+    // Apply theme-token styling (idle look). Called on (re)build so the field
+    // matches the surrounding card in both light and dark themes.
+    void applyTokens(const DesignTokens& tk);
 
 signals:
     void captured(uint32_t carbonKeyCode, uint32_t carbonModifiers,
@@ -111,4 +205,6 @@ private:
     static uint32_t carbonKeyCode(int qtKey, quint32 nativeVK);
 
     bool m_recording = false;
+    QString m_idleStyle;       // theme-derived idle stylesheet
+    QString m_recordingStyle;  // theme-derived recording stylesheet
 };

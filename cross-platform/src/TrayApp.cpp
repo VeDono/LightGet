@@ -27,6 +27,7 @@
 #include <QImage>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPalette>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
@@ -114,6 +115,66 @@ QIcon makeMenuGlyph(MenuGlyph kind) {
     QIcon icon(pm);
     icon.setIsMask(true);
     return icon;
+}
+
+// QSS for the tray context menu, modelled on tray_menu.dc.html. The design is a
+// light-theme mockup; its tokens map straight to the light branch here, and a
+// dark branch derives the equivalent values so the menu reads on both menu-bar
+// appearances. We branch on the menu palette's window lightness rather than
+// hard-coding one theme. Tokens (design -> QSS):
+//   --c-menu-bg     #ffffff   menu background
+//   --c-menu-border #dcdce0   1px outer border + 11px radius
+//   --c-menu-sep    #ececef   separator hairline
+//   --c-text        #1d1d1f   item text
+//   --c-accent      #007aff   hover/selected highlight (white text on it)
+// Item geometry mirrors the mockup: 8px/12px item padding, 6px item radius,
+// ~11px icon-to-label gap, comfortable left icon column.
+QString menuStyleSheet(const QPalette& pal) {
+    const bool dark = pal.color(QPalette::Window).lightness() < 128;
+
+    // Light = design tokens verbatim. Dark = readable equivalents (system dark
+    // menu surface, slightly lighter border/sep, near-white text); the accent
+    // (#007aff) is shared and reads white-on-blue in both.
+    const QString menuBg     = dark ? QStringLiteral("#2b2b2e") : QStringLiteral("#ffffff");
+    const QString menuBorder = dark ? QStringLiteral("#3a3a3d") : QStringLiteral("#dcdce0");
+    const QString menuSep    = dark ? QStringLiteral("#3a3a3d") : QStringLiteral("#ececef");
+    const QString text       = dark ? QStringLiteral("#f2f2f5") : QStringLiteral("#1d1d1f");
+    const QString accent     = QStringLiteral("#007aff");
+    const QString onAccent   = QStringLiteral("#ffffff");
+
+    return QStringLiteral(
+        "QMenu {"
+        " background: %1;"
+        " border: 1px solid %2;"
+        " border-radius: 11px;"
+        " padding: 6px;"
+        " color: %4;"
+        "}"
+        "QMenu::item {"
+        " background: transparent;"
+        " padding: 8px 12px 8px 11px;"
+        " margin: 1px 0;"
+        " border-radius: 6px;"
+        " color: %4;"
+        "}"
+        // Keep the painted template icons; just give them the design's 11px gap
+        // to the label and a roomy left column so they don't crowd the edge.
+        "QMenu::icon {"
+        " padding-left: 11px;"
+        "}"
+        "QMenu::item:selected {"
+        " background: %3;"
+        " color: %5;"
+        "}"
+        "QMenu::item:disabled {"
+        " color: %4;"
+        "}"
+        "QMenu::separator {"
+        " height: 1px;"
+        " background: %6;"
+        " margin: 5px 9px;"
+        "}")
+        .arg(menuBg, menuBorder, accent, text, onAccent, menuSep);
 }
 
 } // namespace
@@ -210,6 +271,15 @@ void TrayApp::applyBarIcon() {
 
 QMenu* TrayApp::buildMenu() {
     QMenu* menu = new QMenu();
+
+    // Style the popup to match tray_menu.dc.html (rounded card, accent hover,
+    // hairline separators) while keeping every item/icon/action below intact.
+    // Frameless + translucent background lets the QSS 11px corner radius show
+    // without a square native frame painting opaque corners behind it.
+    menu->setWindowFlag(Qt::FramelessWindowHint, true);
+    menu->setWindowFlag(Qt::NoDropShadowWindowHint, false);
+    menu->setAttribute(Qt::WA_TranslucentBackground, true);
+    menu->setStyleSheet(menuStyleSheet(menu->palette()));
 
     // Capture: title shows the hotkey as plain text, NO accelerator. The hotkey
     // fires globally via GlobalHotkey, not via this menu item — showing an

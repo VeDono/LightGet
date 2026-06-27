@@ -28,10 +28,13 @@
 #include <QTransform>
 #include <QStyle>
 #include <QStyleOptionButton>
+#include <QEnterEvent>
+#include <QEvent>
 #include <QPolygonF>
 #include <QtMath>
 #include <cmath>
 #include <cstdlib>   // std::abs(int) in Palette::sameColor
+#include <cstring>   // std::strcmp (close-action detection)
 
 // ---------------------------------------------------------------------------
 // Palette namespace
@@ -74,12 +77,20 @@ bool sameColor(const QColor& a, const QColor& b) {
 // ---------------------------------------------------------------------------
 namespace {
 
-constexpr int kPanelBorderToolbarR  = 31;   // rgba(31,31,31,242) — NSColor(white:0.12)
-constexpr int kPanelAlphaToolbar    = 242;  // 0.95 * 255
-constexpr int kPanelAlphaInspector  = 245;  // 0.96 * 255
-constexpr double kPanelRadius       = 8.0;
+// Design tokens (toolbar_canvas.html): surface #242429, accent #0A84FF, border
+// white@9%. The toolbar panel uses radius 16; the inspector keeps the tighter 8.
+const QColor kPanelSurface(0x24, 0x24, 0x29);     // #242429
+const QColor kPanelBorder(255, 255, 255, 23);     // rgba(255,255,255,0.09)
+constexpr double kPanelRadiusToolbar   = 16.0;
+constexpr double kPanelRadiusInspector = 8.0;
 
-const QColor kSelectedBlue(0, 122, 255);    // systemBlue / #007AFF
+const QColor kSelectedBlue(0x0a, 0x84, 0xff);     // accent / active — #0A84FF
+const QColor kGlyphIdle(0xd4, 0xd5, 0xda);        // resting glyph color — #D4D5DA
+const QColor kGlyphSelected(255, 255, 255);       // glyph on the blue fill
+const QColor kCloseGlyph(0xff, 0x69, 0x61);       // close action glyph — #FF6961
+const QColor kHoverFill(255, 255, 255, 23);       // hover bg — rgba(255,255,255,0.09)
+const QColor kCloseHoverFill(0xff, 0x69, 0x61, 41);// close hover — rgba(255,105,97,0.16)
+const QColor kSeparator(255, 255, 255, 26);       // 1px divider — rgba(255,255,255,0.1)
 
 // Render a vector glyph centered into a transparent pixmap of `size`, stroked /
 // filled in `tint`. The path is drawn in a 0..1 unit box then scaled to fit.
@@ -93,11 +104,13 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    // Glyph drawing area: a centered square inset from the icon canvas. Tuned to
-    // match the native SF-symbol toolbar: native glyphs measure ~12-16px in a 30px
-    // button (avg ~0.45 fill) with thin strokes. inset 0.26 → glyph 28*0.48 ≈
-    // 13.4px, i.e. ~0.45 of the button — same visual size as native.
-    const qreal inset = side * 0.26;
+    // Glyph drawing area: a centered square inset from the icon canvas. The design
+    // (toolbar_canvas.html §1) draws ~21px SVG glyphs in a 40px button — a ~0.52
+    // fill ratio — with a 1.8/24 ≈ 0.075 relative stroke. We keep the procedural
+    // glyph SHAPES (tuned to the native SF symbols) and only match the design's
+    // footprint/weight: inset 0.24 → glyph ≈ side*0.52, stroke ≈ side*0.045 of the
+    // button (≈0.075 of the glyph box), reading like the design's line icons.
+    const qreal inset = side * 0.24;
     const QRectF box(inset, inset, side - 2 * inset, side - 2 * inset);
     const qreal w = box.width(), h = box.height();
     const qreal x0 = box.left(), y0 = box.top();
@@ -105,7 +118,7 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
     auto py = [&](qreal v) { return y0 + v * h; };  // v in 0..1 (top-down)
 
     QPen stroke(tint);
-    stroke.setWidthF(side * 0.058);   // thin, matching the native SF-symbol weight
+    stroke.setWidthF(side * 0.045);   // matches the design's ~1.8/24 line weight
     stroke.setCapStyle(Qt::RoundCap);
     stroke.setJoinStyle(Qt::RoundJoin);
     p.setPen(stroke);
@@ -310,11 +323,14 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
     return QIcon(pm);
 }
 
-// Antialiased color well for the palette. Replaces the QSS `border:1px solid`
-// circle, which aliased badly on a tiny 18px rounded button (the "pixelated
-// outline" the user reported). Drawn into a 2x pixmap: a filled AA circle with a
-// subtle contrast ring; the selected well gets a bright outer ring + checkmark.
-QIcon makeSwatch(const QColor& color, bool selected, int d = 18) {
+// Antialiased color well for the palette, matching the design swatches
+// (toolbar_canvas.html §1): a 26px filled circle. Unselected wells carry a thin
+// inset contrast ring (white@18% on color, black@15% on white); the selected
+// well gets the design's two-tone halo — a dark panel-colored gap ring followed
+// by a bright white outer ring (box-shadow: 0 0 0 2px #242429, 0 0 0 4px white)
+// — plus a centered white checkmark. The icon is drawn slightly smaller than the
+// button so the halo and the 1.10x pop never reach the clip boundary.
+QIcon makeSwatch(const QColor& color, bool selected, int d = 26) {
     const qreal dpr = 2.0;
     QPixmap pm(int(d * dpr), int(d * dpr));
     pm.setDevicePixelRatio(dpr);
@@ -323,46 +339,60 @@ QIcon makeSwatch(const QColor& color, bool selected, int d = 18) {
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    const qreal ringInset = selected ? 2.2 : 1.0;
-    const QRectF r(ringInset, ringInset, d - 2 * ringInset, d - 2 * ringInset);
+    // The white outer ring lives OUTSIDE the fill in the design (0 0 0 4px), so
+    // leave room for it: the colored disc is inset when selected.
+    const qreal discInset = selected ? d * 0.135 : 0.5;   // ~3.5px halo room at 26
+    const QRectF disc(discInset, discInset, d - 2 * discInset, d - 2 * discInset);
     p.setPen(Qt::NoPen);
     p.setBrush(color);
-    p.drawEllipse(r);
-
-    // Contrast ring on the fill edge: dark on light swatches, light on dark.
-    const QColor edge = Palette::isLight(color) ? QColor(0, 0, 0, 70)
-                                                : QColor(255, 255, 255, 150);
-    p.setBrush(Qt::NoBrush);
-    p.setPen(QPen(edge, 1.0));
-    p.drawEllipse(r);
+    p.drawEllipse(disc);
 
     if (selected) {
-        p.setPen(QPen(QColor(255, 255, 255, 235), 1.6));
-        p.drawEllipse(QRectF(1.0, 1.0, d - 2.0, d - 2.0));
+        // Two-tone halo: panel-color gap, then bright white outer ring.
+        const qreal whiteW = d * 0.075;                   // ~2px white ring
+        const qreal gapW   = d * 0.075;                   // ~2px panel-color gap
+        const qreal whiteR = (disc.width() + gapW * 2 + whiteW) / 2.0;
+        const QPointF c = disc.center();
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(kPanelSurface, gapW));              // gap ring (matches panel)
+        p.drawEllipse(c, disc.width() / 2.0 + gapW / 2.0,
+                         disc.height() / 2.0 + gapW / 2.0);
+        p.setPen(QPen(QColor(255, 255, 255, 230), whiteW));
+        p.drawEllipse(c, whiteR, whiteR);
+
+        // Centered checkmark, contrast against the swatch color.
         const QColor tint = Palette::isLight(color) ? Qt::black : Qt::white;
         auto u = [&](qreal t) { return t * d; };
-        QPen cm(tint, d * 0.10, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        QPen cm(tint, d * 0.115, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
         p.setPen(cm);
-        p.drawPolyline(QPolygonF({ QPointF(u(0.30), u(0.52)),
-                                   QPointF(u(0.45), u(0.68)),
-                                   QPointF(u(0.72), u(0.34)) }));
+        p.drawPolyline(QPolygonF({ QPointF(u(0.31), u(0.52)),
+                                   QPointF(u(0.44), u(0.66)),
+                                   QPointF(u(0.70), u(0.33)) }));
+    } else {
+        // Thin inset contrast ring on the fill edge (design: inset 0 0 0 1px).
+        const QColor edge = Palette::isLight(color) ? QColor(0, 0, 0, 38)
+                                                    : QColor(255, 255, 255, 46);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(edge, 1.0));
+        const QRectF ring = disc.adjusted(0.5, 0.5, -0.5, -0.5);
+        p.drawEllipse(ring);
     }
     p.end();
     return QIcon(pm);
 }
 
 // A QPushButton that pops (scales 1.0->peak->1.0 about its center) on demand and
-// optionally paints a checkmark / colored fill itself. Replaces the Swift
-// ActionButton + CALayer transform animation.
+// paints its own rounded background to match the LightGet design
+// (toolbar_canvas.html §1): a resting transparent button, a hover fill
+// (white@9%, or a custom tint for the close action), and a full selected fill
+// (systemBlue). Replaces the Swift ActionButton + CALayer transform animation.
 //
-// CLIPPING FIX (task 1): the pop scales the button content via a QTransform in
-// paintEvent, which is clipped to the widget's own rect. A >1 scale therefore
-// clips anything that reaches the button edge. Two things used to reach the edge:
-//   - the glyph icon (drawn at full kButtonSize) — now rendered SMALLER than the
-//     button via setIconSize(~24px) so a 1.10x pop stays inside the 30px bounds;
-//   - the selected-tool blue highlight (was a full-bleed QSS background) — now
-//     painted HERE as a rounded rect INSET from the edge, so it scales without
-//     touching the clip boundary. The QSS background is dropped for tool buttons.
+// CLIPPING NOTE: the pop scales the button content via a QTransform in
+// paintEvent, which is clipped to the widget's own rect. Both the rounded
+// background (drawn 0.5px inset) and the glyph icon (rendered at the button size
+// but with the glyph's own transparent margin) stay clear of the clip boundary,
+// so a 1.10x pop never clips. The fill is a single rounded rect at the design's
+// 11px radius, scaling cleanly with the pop.
 class PopButton : public QPushButton {
 public:
     explicit PopButton(QWidget* parent = nullptr) : QPushButton(parent) {
@@ -373,18 +403,22 @@ public:
         setStyleSheet(QStringLiteral("QPushButton{border:none;background:transparent;}"));
     }
 
-    // Selected-tool highlight: an inset rounded blue rect painted by this widget
-    // (NOT a full-bleed QSS background) so it stays clear of the clip boundary
-    // and scales cleanly with the pop. Pass a non-null color to enable.
-    void setHighlight(const QColor& color, qreal inset = 3.0, qreal radius = 6.0) {
+    // Full selected fill (design: a solid systemBlue button at the 11px radius).
+    // Pass a non-null color to enable; the glyph tint is the caller's concern.
+    void setHighlight(const QColor& color, qreal radius = 11.0) {
         m_highlight = color;
-        m_highlightInset = inset;
         m_highlightRadius = radius;
         update();
     }
     void clearHighlight() {
-        m_highlight = QColor();   // invalid -> no highlight
+        m_highlight = QColor();   // invalid -> no selected fill
         update();
+    }
+
+    // Per-button hover fill + the rounded-rect radius used for hover/selected.
+    void setHoverFill(const QColor& color, qreal radius = 11.0) {
+        m_hoverFill = color;
+        m_highlightRadius = radius;
     }
 
     // Trigger the center-anchored pop. peak 1.10 (toolbar) / 1.18 (inspector).
@@ -411,10 +445,26 @@ public:
     }
 
 protected:
+    void enterEvent(QEnterEvent* e) override {
+        m_hovered = true;
+        update();
+        QPushButton::enterEvent(e);
+    }
+    void leaveEvent(QEvent* e) override {
+        m_hovered = false;
+        update();
+        QPushButton::leaveEvent(e);
+    }
+
     void paintEvent(QPaintEvent* e) override {
         const bool popping = !qFuzzyCompare(m_scale, qreal(1.0));
-        if (!popping && !m_highlight.isValid()) {
-            // Plain, unscaled, no self-drawn highlight -> let the style paint it.
+        // The background to paint: selected fill > hover fill > nothing.
+        QColor bg;
+        if (m_highlight.isValid())                 bg = m_highlight;
+        else if (m_hovered && m_hoverFill.isValid()) bg = m_hoverFill;
+
+        if (!popping && !bg.isValid()) {
+            // Plain, unscaled, no self-drawn background -> let the style paint it.
             QPushButton::paintEvent(e);
             return;
         }
@@ -423,9 +473,9 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
 
         // Scale about center without shifting (matches the Swift centered() matrix).
-        // The same transform covers the inset highlight AND the icon, so both pop
-        // together — and both stay inside the widget rect (highlight is inset,
-        // icon is sub-button-size), so neither clips at the scaled edge.
+        // The same transform covers the rounded background AND the icon, so both
+        // pop together and both stay inside the widget rect (background is 0.5px
+        // inset, the glyph has its own transparent margin), so neither clips.
         if (popping) {
             const QPointF c(width() / 2.0, height() / 2.0);
             QTransform t;
@@ -435,18 +485,16 @@ protected:
             p.setTransform(t);
         }
 
-        // Inset rounded highlight (selected tool) painted by us, not via QSS.
-        if (m_highlight.isValid()) {
-            const QRectF hr = QRectF(rect()).adjusted(
-                m_highlightInset, m_highlightInset, -m_highlightInset, -m_highlightInset);
+        // Rounded background (selected/hover) painted by us, not via QSS.
+        if (bg.isValid()) {
+            const QRectF hr = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
             p.setPen(Qt::NoPen);
-            p.setBrush(m_highlight);
+            p.setBrush(bg);
             p.drawRoundedRect(hr, m_highlightRadius, m_highlightRadius);
         }
 
         // Re-render the base button content (the icon) under the transform. The
-        // icon is sized below kButtonSize (setIconSize ~24px), so it never reaches
-        // the clip boundary even at the pop peak.
+        // glyph's transparent inset keeps it clear of the clip boundary at the pop.
         QStyleOptionButton opt;
         initStyleOption(&opt);
         style()->drawControl(QStyle::CE_PushButton, &opt, &p, this);
@@ -455,9 +503,10 @@ protected:
 private:
     QVariantAnimation* m_anim = nullptr;
     qreal m_scale = 1.0;
-    QColor m_highlight;            // invalid = no selected-tool highlight
-    qreal  m_highlightInset = 3.0;
-    qreal  m_highlightRadius = 6.0;
+    bool   m_hovered = false;
+    QColor m_highlight;            // invalid = not selected
+    QColor m_hoverFill;            // invalid = no hover fill
+    qreal  m_highlightRadius = 11.0;
 };
 
 } // namespace
@@ -490,7 +539,16 @@ void ToolbarView::buildButtons() {
         if (auto* pb = qobject_cast<QPushButton*>(child)) pb->deleteLater();
     }
 
-    qreal x = kPad;
+    m_separatorX.clear();
+    qreal x = kPadH;
+
+    // Lay a group divider at the current cursor: design §1 is a 1px line,
+    // height 26, with margin 7 on each side. Advances x past the line+margins.
+    auto addSeparator = [&]() {
+        x += 7;                       // left margin
+        m_separatorX.append(int(x));  // centre of the 1px line (painted in paintEvent)
+        x += 1 + 7;                   // line + right margin
+    };
 
     // --- Tools (only the ones enabled in Settings; Select is always enabled) ---
     struct ToolSym { Tool tool; const char* symbol; };
@@ -507,11 +565,14 @@ void ToolbarView::buildButtons() {
         if (!Settings::instance().isToolEnabled(ts.tool)) continue;
         const Tool tool = ts.tool;
         auto* b = new PopButton(this);
-        // Render the glyph at kIconSize (< kButtonSize) and center it in the
-        // button: the smaller icon leaves margin so the 1.10x pop never clips.
-        b->setIcon(makeGlyph(QString::fromLatin1(ts.symbol), Qt::white, kIconSize));
+        // Idle glyph in the design's resting color (#D4D5DA); selected/hover state
+        // swaps the glyph to white (see setSelectedTool). Glyph drawn at the button
+        // size with its own transparent margin so the 1.10x pop never clips.
+        b->setIcon(makeGlyph(QString::fromLatin1(ts.symbol), kGlyphIdle, kIconSize));
         b->setIconSize(QSize(kIconSize, kIconSize));
-        b->setGeometry(int(x), kPad, kButtonSize, kButtonSize);
+        b->setHoverFill(kHoverFill, kBtnRadius);
+        b->setGeometry(int(x), kPadV, kButtonSize, kButtonSize);
+        b->setProperty("symbol", QString::fromLatin1(ts.symbol));
         connect(b, &QPushButton::clicked, this, [this, tool] {
             setSelectedTool(tool);
             emit selectToolRequested(tool);
@@ -519,28 +580,25 @@ void ToolbarView::buildButtons() {
         });
         b->show();
         m_toolButtons.insert(tool, b);
-        x += kButtonSize + 2;
+        x += kButtonSize + kGap;
     }
-    // Re-apply the highlight (default Select) so the active tool stays lit.
-    setSelectedTool(m_selectedTool);
 
     // --- Color palette (only if enabled in Settings) ---
     if (Settings::instance().showColorPalette()) {
-        x += 6;  // separator
+        addSeparator();   // divider between tools and the swatch group
         const auto& cols = Palette::colors();
         for (int i = 0; i < cols.size(); ++i) {
             const QColor color = cols[i];
             auto* well = new PopButton(this);
             well->setProperty("fill", color);
-            // 18x18 circle, vertically centered within the 30px button row.
-            const int wy = kPad + (kButtonSize - 18) / 2;
-            well->setGeometry(int(x), wy, 18, 18);
-            // The well is painted as an antialiased icon (makeSwatch), not a QSS
-            // rounded border — the latter aliased on this tiny 18px button. Keep
-            // the button itself borderless/transparent; setSelectedColor assigns
-            // the swatch icon (and the selected ring + checkmark).
+            // 26px circle (design §1), vertically centered within the button row.
+            const int wy = kPadV + (kButtonSize - kSwatch) / 2;
+            well->setGeometry(int(x), wy, kSwatch, kSwatch);
+            // The well is painted as an antialiased icon (makeSwatch); the button
+            // itself stays borderless/transparent (no QSS ring, no hover fill —
+            // the design swatches don't get a hover background).
             well->setStyleSheet(QStringLiteral("QPushButton{border:none;background:transparent;}"));
-            well->setIconSize(QSize(18, 18));
+            well->setIconSize(QSize(kSwatch, kSwatch));
             connect(well, &QPushButton::clicked, this, [this, color, i] {
                 emit selectColorRequested(color);
                 setSelectedColor(i);
@@ -548,12 +606,13 @@ void ToolbarView::buildButtons() {
             });
             well->show();
             m_colorButtons.append(qMakePair(color, static_cast<QPushButton*>(well)));
-            x += 22;
+            x += kSwatch + kSwatchGap;
         }
-        setSelectedColor(m_selectedColor);  // default selected = 0 (red)
+        x -= kSwatchGap;          // trailing swatch needs no gap before the divider
+        addSeparator();           // divider between the swatch group and actions
+    } else {
+        addSeparator();           // divider between tools and actions
     }
-
-    x += 6;  // separator
 
     // --- Actions ---
     struct ActionSym { const char* symbol; void (ToolbarView::*sig)(); };
@@ -565,19 +624,29 @@ void ToolbarView::buildButtons() {
         { "xmark",                 &ToolbarView::closeRequested },
     };
     for (const auto& a : actions) {
+        const bool isClose = (std::strcmp(a.symbol, "xmark") == 0);
         auto* b = new PopButton(this);
-        // Same sub-button-size glyph as the tools so the action pop never clips.
-        b->setIcon(makeGlyph(QString::fromLatin1(a.symbol), Qt::white, kIconSize));
+        // The close action carries the design's red glyph + red hover; the rest
+        // use the resting glyph color + white@9% hover.
+        b->setIcon(makeGlyph(QString::fromLatin1(a.symbol),
+                             isClose ? kCloseGlyph : kGlyphIdle, kIconSize));
         b->setIconSize(QSize(kIconSize, kIconSize));
-        b->setGeometry(int(x), kPad, kButtonSize, kButtonSize);
+        b->setHoverFill(isClose ? kCloseHoverFill : kHoverFill, kBtnRadius);
+        b->setGeometry(int(x), kPadV, kButtonSize, kButtonSize);
         auto sig = a.sig;
         connect(b, &QPushButton::clicked, this, [this, sig] { (this->*sig)(); });
         b->show();
-        x += kButtonSize + 2;
+        x += kButtonSize + kGap;
     }
+    x -= kGap;   // trailing button needs no gap before the panel padding
 
-    // Height ALWAYS 42 = buttonSize(30) + pad(6) * 2.
-    setFixedSize(int(x + kPad), kButtonSize + kPad * 2);
+    // Re-apply the highlight (default Select) so the active tool stays lit, and
+    // sync the selected swatch. Done after every button exists.
+    setSelectedTool(m_selectedTool);
+    if (Settings::instance().showColorPalette()) setSelectedColor(m_selectedColor);
+
+    // Height = buttonSize(40) + vertical padding(8) * 2 = 56.
+    setFixedSize(int(x + kPadH), kButtonSize + kPadV * 2);
     update();
 }
 
@@ -585,13 +654,19 @@ void ToolbarView::setSelectedTool(Tool t) {
     m_selectedTool = t;
     for (auto it = m_toolButtons.begin(); it != m_toolButtons.end(); ++it) {
         const bool sel = (it.key() == t);
-        // Highlight is painted by the PopButton as an INSET rounded rect (~3px
-        // from the edge), not a full-bleed QSS background — so it never reaches
-        // the clip boundary and scales cleanly with the pop (task 1). The QSS
-        // stays transparent/borderless for every tool button.
         auto* b = static_cast<PopButton*>(it.value());
-        if (sel) b->setHighlight(kSelectedBlue, /*inset=*/3.0, /*radius=*/6.0);
-        else     b->clearHighlight();
+        // Design §1: the selected tool is a SOLID systemBlue button (full fill at
+        // radius 11) with a white glyph; idle tools have a transparent button and
+        // the resting #D4D5DA glyph. Swap both the fill and the glyph tint.
+        const QString symbol = b->property("symbol").toString();
+        if (sel) {
+            b->setHighlight(kSelectedBlue, kBtnRadius);
+            b->setIcon(makeGlyph(symbol, kGlyphSelected, kIconSize));
+        } else {
+            b->clearHighlight();
+            b->setIcon(makeGlyph(symbol, kGlyphIdle, kIconSize));
+        }
+        b->setIconSize(QSize(kIconSize, kIconSize));
     }
 }
 
@@ -600,11 +675,11 @@ void ToolbarView::setSelectedColor(int paletteIndex) {
     for (int i = 0; i < m_colorButtons.size(); ++i) {
         const QColor color = m_colorButtons[i].first;
         QPushButton* well = m_colorButtons[i].second;
-        // Antialiased swatch icon (filled circle + ring; selected adds the bright
-        // ring + checkmark). No QSS border -> no aliased outline.
+        // Antialiased 26px swatch icon (filled circle + inset ring; selected adds
+        // the two-tone halo + checkmark). No QSS border -> no aliased outline.
         well->setStyleSheet(QStringLiteral("QPushButton{border:none;background:transparent;}"));
-        well->setIcon(makeSwatch(color, i == paletteIndex, 18));
-        well->setIconSize(QSize(18, 18));
+        well->setIcon(makeSwatch(color, i == paletteIndex, kSwatch));
+        well->setIconSize(QSize(kSwatch, kSwatch));
     }
 }
 
@@ -622,12 +697,21 @@ void ToolbarView::popColor(int index) {
 void ToolbarView::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
-    const QRectF r = QRectF(rect()).adjusted(0.25, 0.25, -0.25, -0.25);
-    // Panel bg rgba(31,31,31,242); border white@15% 0.5px.
-    p.setPen(QPen(QColor(255, 255, 255, 38), 0.5));   // 0.15 * 255 = 38
-    p.setBrush(QColor(kPanelBorderToolbarR, kPanelBorderToolbarR,
-                      kPanelBorderToolbarR, kPanelAlphaToolbar));
-    p.drawRoundedRect(r, kPanelRadius, kPanelRadius);
+    const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    // Design §1: surface #242429, border white@9% (1px), radius 16.
+    p.setPen(QPen(kPanelBorder, 1.0));
+    p.setBrush(kPanelSurface);
+    p.drawRoundedRect(r, kPanelRadiusToolbar, kPanelRadiusToolbar);
+
+    // 1px group dividers (white@10%, height 26) centred on the recorded x's.
+    p.setRenderHint(QPainter::Antialiasing, false);
+    p.setPen(QPen(kSeparator, 1.0));
+    const qreal sepH = 26.0;
+    const qreal y0 = (height() - sepH) / 2.0;
+    for (int sx : m_separatorX) {
+        const qreal xc = sx + 0.5;   // pixel centre of the 1px line
+        p.drawLine(QPointF(xc, y0), QPointF(xc, y0 + sepH));
+    }
 }
 
 // ===========================================================================
@@ -783,10 +867,10 @@ void TextInspectorView::setSelected(const QColor& textColor,
 void TextInspectorView::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
-    const QRectF r = QRectF(rect()).adjusted(0.25, 0.25, -0.25, -0.25);
-    // Panel bg rgba(31,31,31,245); border white@15% 0.5px.
-    p.setPen(QPen(QColor(255, 255, 255, 38), 0.5));
-    p.setBrush(QColor(kPanelBorderToolbarR, kPanelBorderToolbarR,
-                      kPanelBorderToolbarR, kPanelAlphaInspector));
-    p.drawRoundedRect(r, kPanelRadius, kPanelRadius);
+    const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    // Same surface/border tokens as the toolbar (design: one dark panel for all
+    // floating chrome), kept at the tighter inspector radius.
+    p.setPen(QPen(kPanelBorder, 1.0));
+    p.setBrush(kPanelSurface);
+    p.drawRoundedRect(r, kPanelRadiusInspector, kPanelRadiusInspector);
 }

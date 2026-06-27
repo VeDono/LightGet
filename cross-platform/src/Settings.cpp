@@ -152,7 +152,7 @@ void Settings::setSaveFolderPath(const std::optional<QString>& v) {
 }
 
 QString Settings::barIcon() const {
-    return m_s.value(kBarIcon, QStringLiteral("scissors")).toString();
+    return m_s.value(kBarIcon, QStringLiteral("feather")).toString();
 }
 
 void Settings::setBarIcon(const QString& v) {
