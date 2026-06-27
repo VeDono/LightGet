@@ -433,7 +433,7 @@ void ToolbarView::popColor(int index) {
 void ToolbarView::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
-    const QRectF r = rect().adjusted(0.25, 0.25, -0.25, -0.25);
+    const QRectF r = QRectF(rect()).adjusted(0.25, 0.25, -0.25, -0.25);
     // Panel bg rgba(31,31,31,242); border white@15% 0.5px.
     p.setPen(QPen(QColor(255, 255, 255, 38), 0.5));   // 0.15 * 255 = 38
     p.setBrush(QColor(kPanelBorderToolbarR, kPanelBorderToolbarR,
@@ -594,7 +594,7 @@ void TextInspectorView::setSelected(const QColor& textColor,
 void TextInspectorView::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
-    const QRectF r = rect().adjusted(0.25, 0.25, -0.25, -0.25);
+    const QRectF r = QRectF(rect()).adjusted(0.25, 0.25, -0.25, -0.25);
     // Panel bg rgba(31,31,31,245); border white@15% 0.5px.
     p.setPen(QPen(QColor(255, 255, 255, 38), 0.5));
     p.setBrush(QColor(kPanelBorderToolbarR, kPanelBorderToolbarR,

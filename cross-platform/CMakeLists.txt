@@ -70,7 +70,7 @@ set(LIGHTGET_RESOURCES
 add_executable(LightGet
     ${LIGHTGET_HEADERS}
     ${LIGHTGET_SOURCES}
-    # ${LIGHTGET_RESOURCES}   # uncomment once resources/assets.qrc exists
+    ${LIGHTGET_RESOURCES}   # resources/assets.qrc — compiled in via AUTORCC
 )
 
 target_include_directories(LightGet PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
