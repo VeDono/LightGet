@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.16)
 
 project(LightGet LANGUAGES CXX)
 
+# Configurable identity. Override at configure time to build a parallel/alternate
+# install, e.g. -DAPP_NAME="LightGet Qt" -DBUNDLE_ID=com.mrleondono.LightGetQt.
+# APP_NAME also becomes the in-app settings scope (own QSettings store).
+set(APP_NAME "LightGet" CACHE STRING "Product / bundle display name")
+set(BUNDLE_ID "com.mrleondono.LightGet" CACHE STRING "macOS bundle identifier")
+
 # ---------------------------------------------------------------------------
 # Standard / Qt setup
 # ---------------------------------------------------------------------------
@@ -81,6 +87,9 @@ target_link_libraries(LightGet PRIVATE
     Qt6::Core
 )
 
+# In-app settings scope = APP_NAME (so an alternate build keeps its own QSettings).
+target_compile_definitions(LightGet PRIVATE LIGHTGET_APP_NAME="${APP_NAME}")
+
 # ---------------------------------------------------------------------------
 # Per-platform: global hotkey + capture + cursor/focus need native APIs.
 # ---------------------------------------------------------------------------
@@ -107,6 +116,24 @@ elseif(APPLE)
         ${COREGRAPHICS_LIB}
         ${SCREENCAPTUREKIT_LIB}
     )
+
+    # --- macOS .app bundle (accessory app, no Dock icon via LSUIElement) ---
+    set_target_properties(LightGet PROPERTIES
+        OUTPUT_NAME "${APP_NAME}"
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "${APP_NAME}"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "${BUNDLE_ID}"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+        MACOSX_BUNDLE_ICON_FILE "AppIcon"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/Info.plist.in"
+    )
+    set(_LIGHTGET_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/resources/AppIcon.icns")
+    if(EXISTS "${_LIGHTGET_ICNS}")
+        target_sources(LightGet PRIVATE "${_LIGHTGET_ICNS}")
+        set_source_files_properties("${_LIGHTGET_ICNS}" PROPERTIES
+            MACOSX_PACKAGE_LOCATION "Resources")
+    endif()
 
     # -----------------------------------------------------------------------
     # Faithful native macOS pieces (OPT-IN; HAVE_MAC_NATIVE is undefined here).

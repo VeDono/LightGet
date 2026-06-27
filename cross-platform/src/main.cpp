@@ -16,14 +16,21 @@
 #include <QCoreApplication>
 #include <QLocale>
 
+// Settings scope (overridable at build time so an alternate/parallel install
+// keeps its OWN QSettings store instead of sharing the native app's).
+#ifndef LIGHTGET_APP_NAME
+#define LIGHTGET_APP_NAME "LightGet"
+#endif
+
 int main(int argc, char** argv) {
     // Identify the QSettings store BEFORE anything reads Settings. These static
     // setters are valid without a QApplication and give QSettings a real backing
-    // store. On macOS this yields the com.mrleondono.LightGet domain, matching the
-    // native app for settings parity.
+    // store. Default APP_NAME "LightGet" + domain mrleondono.com yields the
+    // com.mrleondono.LightGet domain, matching the native app for settings parity;
+    // an alternate build (different APP_NAME) gets its own separate store.
     QCoreApplication::setOrganizationName(QStringLiteral("LightGet"));
     QCoreApplication::setOrganizationDomain(QStringLiteral("mrleondono.com"));
-    QCoreApplication::setApplicationName(QStringLiteral("LightGet"));
+    QCoreApplication::setApplicationName(QStringLiteral(LIGHTGET_APP_NAME));
 
     // Language preference BEFORE QApplication (mirrors AppleLanguages-before-AppKit).
     // Settings is a plain QSettings wrapper that does not require a QApplication,
