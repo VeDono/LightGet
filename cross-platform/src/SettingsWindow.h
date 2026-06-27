@@ -153,11 +153,17 @@ protected:
     void paintEvent(QPaintEvent*) override;
     void enterEvent(QEnterEvent*) override;
     void leaveEvent(QEvent*) override;
+    // Mark the window in which the state flips as a real user click, so the knob
+    // animates ONLY then. Programmatic setChecked() (build / reloadUI / theme
+    // switch) snaps the knob into place with no slide — otherwise every unrelated
+    // settings change visibly re-animates every ON toggle ("twitch").
+    void mouseReleaseEvent(QMouseEvent*) override;
 
 private:
     DesignTokens m_tk;
     qreal m_knobPos = 0.0;   // 0 = off (left), 1 = on (right)
     bool  m_hover = false;
+    bool  m_inUserClick = false;   // true only during a user-initiated toggle
 };
 
 // ---------------------------------------------------------------------------

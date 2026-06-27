@@ -89,9 +89,11 @@ const std::vector<LangEntry> kLanguages = {
     {"English", "en"}, {"Русский", "ru"}, {"Українська", "uk"}
 };
 
-// Preset bar icons (asset names mirroring SF Symbols), exactly 5 (Spec 5 §5.2).
+// Preset bar icons. "feather" is the brand default (matches the app logo's tray
+// silhouette); the rest mirror the design's menu-bar-icon chooser glyphs. Stored
+// by name as Settings::barIcon(); painted by paintPresetGlyph().
 const QStringList kBarIcons = {
-    "scissors", "camera.viewfinder", "crop", "rectangle.dashed",
+    "feather", "scissors", "camera.viewfinder", "crop", "rectangle.dashed",
     "paintbrush.pointed.fill"
 };
 
@@ -107,59 +109,13 @@ constexpr int kFieldWidth   = 240;
 constexpr int kResetSlot    = 28;
 // Card row content padding (11px vertical / 14px horizontal in the design).
 constexpr int kRowPadH      = 14;
-constexpr int kRowPadV      = 9;
+constexpr int kRowPadV      = 11;
 constexpr int kLabelGap     = 14;
 
 QString colCss(const QColor& c) {
     // rgba() so alpha survives in QSS strings.
     return QStringLiteral("rgba(%1,%2,%3,%4)")
         .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha());
-}
-
-// Recolor an alpha-only (white-on-transparent) glyph pixmap to a solid `tint`,
-// preserving the alpha channel. The bundled assets are white-on-transparent
-// (see assets.qrc), invisible on the LIGHT settings background — this stamps
-// them in a readable color (icon/text token) instead.
-QPixmap tintPixmap(const QPixmap& src, const QColor& tint) {
-    if (src.isNull()) return src;
-    QPixmap out(src.size());
-    out.setDevicePixelRatio(src.devicePixelRatio());
-    out.fill(Qt::transparent);
-    QPainter p(&out);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.drawPixmap(0, 0, src);                       // lay down the alpha shape
-    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
-    p.fillRect(out.rect(), tint);                  // recolor opaque areas to tint
-    p.end();
-    return out;
-}
-
-// Resolve a preset bar-icon asset to a QIcon. SF Symbols are macOS-only, so we
-// load a bundled replacement asset from the qrc; fall back to a themed icon,
-// then an empty icon, so the UI still builds.
-QIcon barIconAsset(const QString& name) {
-    QIcon icon(QStringLiteral(":/assets/%1.png").arg(name));
-    if (!icon.isNull()) return icon;
-    QIcon theme = QIcon::fromTheme(name);
-    if (!theme.isNull()) return theme;
-    return QIcon();
-}
-
-// Same as barIconAsset() but recolored to a tint visible on the settings
-// background. The qrc PNGs are white-on-transparent (invisible by default), so
-// the menu-bar-icon chooser / reset glyphs MUST be tinted. Renders a crisp 2x
-// pixmap so the recolor stays sharp on Retina. `size` is in points.
-QIcon barIconAssetTinted(const QString& name, const QColor& tint, int size = 18) {
-    QIcon base = barIconAsset(name);
-    if (base.isNull()) {
-        QIcon theme = QIcon::fromTheme(name);
-        if (!theme.isNull()) base = theme;
-    }
-    if (base.isNull()) return QIcon();
-    const qreal dpr = 2.0;
-    QPixmap pm = base.pixmap(QSize(int(size * dpr), int(size * dpr)));
-    pm.setDevicePixelRatio(dpr);
-    return QIcon(tintPixmap(pm, tint));
 }
 
 // Open a URL in the default browser (mirrors NSWorkspace.shared.open).
@@ -199,12 +155,12 @@ private:
 // Mirrors Swift InlineLinkField: gray + underlined, blue on hover, opens URL.
 class InlineLinkLabel : public QLabel {
 public:
-    InlineLinkLabel(const QString& text, const QString& url, int sizePt,
+    InlineLinkLabel(const QString& text, const QString& url, int sizePx,
                     const QColor& base, const QColor& linkColor,
                     QWidget* parent = nullptr)
         : QLabel(text, parent), m_url(url), m_base(base), m_link(linkColor) {
         QFont f = font();
-        f.setPointSize(sizePt);
+        f.setPixelSize(sizePx);   // px so it matches the px-sized copyright text
         f.setUnderline(true);
         setFont(f);
         setCursor(Qt::PointingHandCursor);
@@ -372,6 +328,307 @@ private:
     QColor m_border;
 };
 
+// ---- Preset glyph painter --------------------------------------------------
+// Paints the menu-bar-icon preset glyphs (and the custom-image button glyph)
+// procedurally, 1:1 with the user's design SVGs, so the chooser reads exactly
+// like the mockup AND clips cleanly inside the rounded strip. `name` is the
+// stored preset key; `box` is the target square; strokes use `color`.
+//   feather (brand)           -> own 96x172 viewBox, FILLED
+//   scissors / target / crop / dashed-rect / pencil / photo -> 24x24, stroked
+void paintPresetGlyph(QPainter& p, const QString& name, const QRectF& box,
+                      const QColor& color, qreal strokeW = 1.6) {
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    if (name == QLatin1String("feather")) {
+        // Brand feather (mono silhouette), viewBox x[62,158] y[14,186]. Keep
+        // aspect, center in the box; filled (no stroke).
+        const qreal vbW = 96.0, vbH = 172.0, vbX = 62.0, vbY = 14.0;
+        const qreal sc = qMin(box.width() / vbW, box.height() / vbH);
+        const qreal ox = box.center().x() - (vbX + vbW / 2.0) * sc;
+        const qreal oy = box.center().y() - (vbY + vbH / 2.0) * sc;
+        auto FX = [&](qreal x) { return ox + x * sc; };
+        auto FY = [&](qreal y) { return oy + y * sc; };
+        QPainterPath body;
+        body.moveTo(FX(100), FY(24));
+        body.cubicTo(FX(113), FY(44),  FX(126), FY(68),  FX(128), FY(96));
+        body.cubicTo(FX(129), FY(114), FX(124), FY(130), FX(113), FY(142));
+        body.cubicTo(FX(110), FY(145), FX(107), FY(147), FX(104), FY(148));
+        body.cubicTo(FX(100), FY(146), FX(96),  FY(143), FX(92),  FY(138));
+        body.cubicTo(FX(85),  FY(128), FX(76),  FY(110), FX(74),  FY(90));
+        body.cubicTo(FX(73),  FY(70),  FX(84),  FY(46),  FX(100), FY(24));
+        body.closeSubpath();
+        QPainterPath nib;
+        nib.addRoundedRect(QRectF(FX(98), FY(150), 12 * sc, 6 * sc), 2.6 * sc, 2.6 * sc);
+        QPainterPath tip;
+        tip.moveTo(FX(99.5), FY(157));
+        tip.lineTo(FX(108.5), FY(157));
+        tip.lineTo(FX(104), FY(179));
+        tip.closeSubpath();
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawPath(body);
+        p.drawPath(nib);
+        p.drawPath(tip);
+        p.restore();
+        return;
+    }
+
+    // 24x24 stroked glyphs.
+    const qreal sc = qMin(box.width(), box.height()) / 24.0;
+    const qreal ox = box.center().x() - 12.0 * sc;
+    const qreal oy = box.center().y() - 12.0 * sc;
+    auto PT = [&](qreal x, qreal y) { return QPointF(ox + x * sc, oy + y * sc); };
+    QPen pen(color, strokeW * sc, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+
+    if (name == QLatin1String("scissors")) {
+        p.drawEllipse(PT(6, 6), 2.4 * sc, 2.4 * sc);
+        p.drawEllipse(PT(6, 18), 2.4 * sc, 2.4 * sc);
+        p.drawLine(PT(8, 7.7), PT(20, 18));
+        p.drawLine(PT(8, 16.3), PT(20, 6));
+    } else if (name == QLatin1String("camera.viewfinder")) {
+        // Design glyph for this slot is a crosshair / target.
+        p.drawEllipse(PT(12, 12), 3.2 * sc, 3.2 * sc);
+        p.drawLine(PT(12, 3),    PT(12, 6.2));
+        p.drawLine(PT(12, 17.8), PT(12, 21));
+        p.drawLine(PT(3, 12),    PT(6.2, 12));
+        p.drawLine(PT(17.8, 12), PT(21, 12));
+    } else if (name == QLatin1String("crop")) {
+        QPainterPath a;
+        a.moveTo(PT(6.5, 2.5)); a.lineTo(PT(6.5, 15.5));
+        a.quadTo(PT(6.5, 17.5), PT(8.5, 17.5)); a.lineTo(PT(21.5, 17.5));
+        QPainterPath b;
+        b.moveTo(PT(2.5, 6.5)); b.lineTo(PT(15.5, 6.5));
+        b.quadTo(PT(17.5, 6.5), PT(17.5, 8.5)); b.lineTo(PT(17.5, 21.5));
+        p.drawPath(a);
+        p.drawPath(b);
+    } else if (name == QLatin1String("rectangle.dashed")) {
+        QPen dp(color, 1.7 * sc, Qt::SolidLine, Qt::FlatCap, Qt::RoundJoin);
+        dp.setDashPattern(QVector<qreal>{ 3.0, 3.2 });
+        p.setPen(dp);
+        p.drawRoundedRect(QRectF(PT(3.5, 3.5), PT(20.5, 20.5)), 2.5 * sc, 2.5 * sc);
+    } else if (name == QLatin1String("paintbrush.pointed.fill") ||
+               name == QLatin1String("pencil")) {
+        p.drawLine(PT(15.5, 5.5), PT(18.5, 8.5));
+        QPainterPath body;
+        body.moveTo(PT(5, 19));
+        body.lineTo(PT(5.5, 15.8));
+        body.lineTo(PT(14.5, 6.8));
+        body.lineTo(PT(17.5, 9.8));
+        body.lineTo(PT(8.5, 18.8));
+        body.closeSubpath();
+        p.drawPath(body);
+    } else if (name == QLatin1String("photo")) {
+        p.drawRoundedRect(QRectF(PT(3.5, 4.5), PT(20.5, 19.5)), 2.5 * sc, 2.5 * sc);
+        p.setBrush(color);
+        p.drawEllipse(PT(8.5, 9.5), 1.4 * sc, 1.4 * sc);
+        p.setBrush(Qt::NoBrush);
+        QPainterPath mt;
+        mt.moveTo(PT(4.5, 17));
+        mt.lineTo(PT(9, 13));
+        mt.lineTo(PT(12, 15.5));
+        mt.lineTo(PT(15.5, 12));
+        mt.lineTo(PT(19.5, 16));
+        p.drawPath(mt);
+    }
+    p.restore();
+}
+
+// Render a preset glyph to a QIcon (for QToolButton-based controls).
+QIcon presetGlyphIcon(const QString& name, const QColor& color, int size) {
+    const qreal dpr = 2.0;
+    QPixmap pm(int(size * dpr), int(size * dpr));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    paintPresetGlyph(p, name, QRectF(0, 0, size, size), color);
+    p.end();
+    return QIcon(pm);
+}
+
+// Paint the design's "reset" reload glyph (counterclockwise ring open at the
+// upper-left + an open-corner arrowhead) into `box`, stroked in `color`.
+// Mirrors the SVG: arc "M3.5 12 a8.5 8.5 0 1 0 2.6-6.1" + corner "M3 4.5V9h4.5".
+void paintReloadGlyph(QPainter& p, const QRectF& box, const QColor& color) {
+    const qreal sc = qMin(box.width(), box.height()) / 24.0;
+    const qreal ox = box.center().x() - 12.0 * sc;
+    const qreal oy = box.center().y() - 12.0 * sc;
+    auto PT = [&](qreal x, qreal y) { return QPointF(ox + x * sc, oy + y * sc); };
+    QPen pen(color, 2.0 * sc, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    // Ring: center (12,12) r8.5; sweep the long way (bottom->right->top) leaving
+    // the gap at the upper-left where the arrowhead sits.
+    QRectF ring(PT(3.5, 3.5), PT(20.5, 20.5));
+    p.drawArc(ring, 180 * 16, -292 * 16);
+    QPainterPath head;
+    head.moveTo(PT(3, 4.5));
+    head.lineTo(PT(3, 9));
+    head.lineTo(PT(7.5, 9));
+    p.drawPath(head);
+}
+
+// ---- ResetButton -----------------------------------------------------------
+// 28px circular per-setting reset (design "Reset" state): transparent with a 1px
+// border; on hover the ring fills accent-weak and the border + glyph turn accent;
+// on click the reload glyph spins -360deg over 500ms. Painted (not an icon asset)
+// so the glyph is always crisp and present in both themes.
+class ResetButton : public QPushButton {
+public:
+    explicit ResetButton(const DesignTokens& tk, QWidget* parent = nullptr)
+        : QPushButton(parent), m_tk(tk) {
+        setFixedSize(28, 28);
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::NoFocus);
+        connect(this, &QPushButton::clicked, this, [this]() {
+            auto* a = new QVariantAnimation(this);
+            a->setStartValue(0.0);
+            a->setEndValue(-360.0);
+            a->setDuration(500);
+            a->setEasingCurve(QEasingCurve::OutCubic);
+            connect(a, &QVariantAnimation::valueChanged, this,
+                    [this](const QVariant& v) { m_spin = v.toReal(); update(); });
+            connect(a, &QVariantAnimation::finished, this,
+                    [this]() { m_spin = 0.0; update(); });
+            a->start(QAbstractAnimation::DeleteWhenStopped);
+        });
+    }
+protected:
+    void enterEvent(QEnterEvent*) override { m_hover = true; update(); }
+    void leaveEvent(QEvent*) override { m_hover = false; update(); }
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        p.setPen(QPen(m_hover ? m_tk.accent : m_tk.border, 1.0));
+        p.setBrush(m_hover ? QBrush(m_tk.accentWeak) : QBrush(Qt::NoBrush));
+        p.drawEllipse(r);
+        const QColor gc = m_hover ? m_tk.accent : m_tk.resetFg;
+        p.save();
+        p.translate(QRectF(rect()).center());
+        p.rotate(m_spin);
+        const qreal g = 15.0;
+        paintReloadGlyph(p, QRectF(-g / 2.0, -g / 2.0, g, g), gc);
+        p.restore();
+    }
+private:
+    DesignTokens m_tk;
+    qreal m_spin = 0.0;
+    bool  m_hover = false;
+};
+
+// ---- IconSegment -----------------------------------------------------------
+// The menu-bar-icon preset chooser: a single rounded, bordered strip of equal
+// icon cells. The selected cell + hover wash are CLIPPED to the rounded 8px
+// container (fixes the bug where the selection's square corners overflowed the
+// strip's rounded corners). Glyphs are painted via paintPresetGlyph so they are
+// 1:1 with the design. Click calls onSelect(index); the owner reloads the UI.
+class IconSegment : public QWidget {
+public:
+    IconSegment(const DesignTokens& tk, const QStringList& names, int selected,
+                std::function<void(int)> onSelect, QWidget* parent = nullptr)
+        : QWidget(parent), m_tk(tk), m_names(names),
+          m_sel(selected), m_onSelect(std::move(onSelect)) {
+        setFixedSize(kCellW * m_names.size() + 1, 32);
+        setCursor(Qt::PointingHandCursor);
+        setMouseTracking(true);
+    }
+    QSize sizeHint() const override { return QSize(kCellW * m_names.size() + 1, 32); }
+protected:
+    void leaveEvent(QEvent*) override { m_hover = -1; update(); }
+    void mouseMoveEvent(QMouseEvent* e) override {
+        const int h = hit(e->pos());
+        if (h != m_hover) { m_hover = h; update(); }
+    }
+    void mousePressEvent(QMouseEvent* e) override {
+        const int h = hit(e->pos());
+        if (h >= 0 && m_onSelect) m_onSelect(h);
+    }
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        const qreal rad = 8.0;
+        const int n = m_names.size();
+        const qreal cw = r.width() / n;
+
+        QPainterPath clip;
+        clip.addRoundedRect(r, rad, rad);
+        p.save();
+        p.setClipPath(clip);                 // clip washes to the rounded strip
+        p.fillRect(r, m_tk.control);
+        for (int i = 0; i < n; ++i) {
+            if (i == m_sel || i == m_hover) {
+                QRectF cell(r.left() + i * cw, r.top(), cw, r.height());
+                p.fillRect(cell, m_tk.accentWeak);
+            }
+        }
+        p.setPen(QPen(m_tk.border, 1.0));
+        for (int i = 1; i < n; ++i) {
+            const qreal x = r.left() + i * cw;
+            p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
+        }
+        for (int i = 0; i < n; ++i) {
+            QRectF cell(r.left() + i * cw, r.top(), cw, r.height());
+            const QColor c = (i == m_sel) ? m_tk.accent : m_tk.icon;
+            const qreal g = 17.0;
+            paintPresetGlyph(p, m_names[i],
+                             QRectF(cell.center().x() - g / 2.0,
+                                    cell.center().y() - g / 2.0, g, g), c);
+        }
+        p.restore();
+        p.setPen(QPen(m_tk.border, 1.0));     // crisp outer border on top
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(r, rad, rad);
+    }
+private:
+    int hit(const QPoint& pt) const {
+        const int n = m_names.size();
+        if (n == 0) return -1;
+        const qreal cw = qreal(width()) / n;
+        return qBound(0, int(pt.x() / cw), n - 1);
+    }
+    static constexpr int kCellW = 34;
+    DesignTokens m_tk;
+    QStringList  m_names;
+    int m_sel = 0;
+    int m_hover = -1;
+    std::function<void(int)> m_onSelect;
+};
+
+// ---- LanguageCombo ---------------------------------------------------------
+// QComboBox restyled to the design: rounded control + a custom up/down double-
+// chevron (the native single triangle is hidden via QSS). The popup view is
+// styled (rounded, padded items, accent-weak selection) by the caller's QSS.
+class LanguageCombo : public QComboBox {
+public:
+    explicit LanguageCombo(const DesignTokens& tk, QWidget* parent = nullptr)
+        : QComboBox(parent), m_tk(tk) {}
+protected:
+    void paintEvent(QPaintEvent* e) override {
+        QComboBox::paintEvent(e);            // frame + text via QSS (arrow hidden)
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QPen pen(m_tk.text2, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(pen);
+        const qreal cx = width() - 14.0, cy = height() / 2.0;
+        QPainterPath up;
+        up.moveTo(cx - 3.5, cy - 1.6);
+        up.lineTo(cx, cy - 5.0);
+        up.lineTo(cx + 3.5, cy - 1.6);
+        QPainterPath down;
+        down.moveTo(cx - 3.5, cy + 1.6);
+        down.lineTo(cx, cy + 5.0);
+        down.lineTo(cx + 3.5, cy + 1.6);
+        p.drawPath(up);
+        p.drawPath(down);
+    }
+private:
+    DesignTokens m_tk;
+};
+
 // Version + edition (set as compile definitions in CMakeLists.txt). Defaults
 // keep the file self-contained if a definition is ever missing.
 #ifndef LIGHTGET_VERSION
@@ -393,18 +650,36 @@ ToggleSwitch::ToggleSwitch(const DesignTokens& tk, QWidget* parent)
     setFocusPolicy(Qt::NoFocus);
     setFixedSize(38, 22);
     m_knobPos = isChecked() ? 1.0 : 0.0;
-    // Animate the knob slide on every toggle (180ms ease-out per the design).
+    // Knob behaviour: animate the 180ms slide ONLY for a real user toggle; snap
+    // for any programmatic setChecked() (initial build, reloadUI on an unrelated
+    // change, theme switch). Without this every ON toggle re-slides from off->on
+    // each rebuild, which reads as the toggles "twitching" on any settings change.
     connect(this, &QAbstractButton::toggled, this, [this](bool on) {
-        auto* anim = new QPropertyAnimation(this, "knobPos", this);
-        anim->setDuration(180);
-        anim->setStartValue(m_knobPos);
-        anim->setEndValue(on ? 1.0 : 0.0);
-        anim->setEasingCurve(QEasingCurve::OutCubic);
-        anim->start(QAbstractAnimation::DeleteWhenStopped);
+        const qreal target = on ? 1.0 : 0.0;
+        if (m_inUserClick) {
+            auto* anim = new QPropertyAnimation(this, "knobPos", this);
+            anim->setDuration(180);
+            anim->setStartValue(m_knobPos);
+            anim->setEndValue(target);
+            anim->setEasingCurve(QEasingCurve::OutCubic);
+            anim->start(QAbstractAnimation::DeleteWhenStopped);
+        } else {
+            m_knobPos = target;   // snap — no slide
+            update();
+        }
     });
 }
 
 QSize ToggleSwitch::sizeHint() const { return QSize(38, 22); }
+
+void ToggleSwitch::mouseReleaseEvent(QMouseEvent* e) {
+    // QAbstractButton flips the checked state (and emits toggled) inside the base
+    // release handler; wrap it so the toggled handler above knows this change is
+    // user-initiated and should animate.
+    m_inUserClick = true;
+    QAbstractButton::mouseReleaseEvent(e);
+    m_inUserClick = false;
+}
 
 void ToggleSwitch::setKnobPos(qreal v) {
     m_knobPos = v;
@@ -872,7 +1147,8 @@ SettingsWindow::SettingsWindow(QWidget* parent) : QDialog(parent) {
     // card + About footer breathe (design canvas is 500x894).
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     setAttribute(Qt::WA_TranslucentBackground, true);   // rounded corners show through
-    setFixedSize(500, 820);
+    setFixedSize(500, 840);   // tall enough for the General card + About footer
+                              // (design root 500x894), without a loose gap.
 
     m_recorder = new HotkeyRecorder(this);   // reused member across rebuilds
     connect(m_recorder, &HotkeyRecorder::captured, this,
@@ -1238,20 +1514,18 @@ QWidget* SettingsWindow::buildTitleBar() {
     h->setContentsMargins(16, 0, 16, 0);
     h->setSpacing(8);
 
-    // Traffic-light dots (left). Red closes; yellow/green are no-ops (the window
-    // is non-minimizable / fixed-size, matching an accessory settings panel).
-    struct Dot { const char* color; };
-    const char* dotColors[3] = { "#ff5f57", "#febc2e", "#28c840" };
-    for (int i = 0; i < 3; ++i) {
+    // Single red "close" dot (left). The window is a fixed-size accessory panel,
+    // so the yellow (minimize) and green (zoom) dots would be non-functional —
+    // per the user's request they're dropped, leaving only the working close.
+    {
         auto* dot = new QPushButton;
         dot->setFixedSize(12, 12);
         dot->setCursor(Qt::PointingHandCursor);
         dot->setFocusPolicy(Qt::NoFocus);
         dot->setStyleSheet(QStringLiteral(
-            "QPushButton { background-color:%1; border:none; border-radius:6px; }")
-            .arg(QString::fromUtf8(dotColors[i])));
-        if (i == 0)
-            connect(dot, &QPushButton::clicked, this, &QWidget::close);
+            "QPushButton { background-color:#ff5f57; border:none; border-radius:6px; }"
+            "QPushButton:hover { background-color:#ff4438; }"));
+        connect(dot, &QPushButton::clicked, this, &QWidget::close);
         h->addWidget(dot, 0, Qt::AlignVCenter);
     }
 
@@ -1297,7 +1571,7 @@ QWidget* SettingsWindow::buildGeneralTab() {
     };
 
     // --- Language (combo, no reset) ---
-    auto* langCombo = new QComboBox;
+    auto* langCombo = new LanguageCombo(m_tk);
     for (const auto& l : kLanguages) langCombo->addItem(QString::fromUtf8(l.title));
     int langIdx = 0;
     for (size_t i = 0; i < kLanguages.size(); ++i)
@@ -1306,14 +1580,22 @@ QWidget* SettingsWindow::buildGeneralTab() {
     langCombo->setMinimumWidth(150);
     langCombo->setFixedHeight(30);
     langCombo->setCursor(Qt::PointingHandCursor);
+    // Native single-triangle arrow hidden (LanguageCombo paints the design's
+    // up/down double-chevron); rounded control + a clean, padded popup with an
+    // accent-weak selection, matching the design.
     langCombo->setStyleSheet(QStringLiteral(
         "QComboBox { background-color:%1; color:%2; border:1px solid %3;"
-        " border-radius:8px; padding:0 8px 0 12px; font-size:13px; }"
+        " border-radius:8px; padding:0 28px 0 12px; font-size:13px; }"
         "QComboBox:hover { border-color:%4; }"
-        "QComboBox::drop-down { border:none; width:20px; }"
-        "QComboBox QAbstractItemView { background-color:%1; color:%2;"
-        " border:1px solid %3; selection-background-color:%5;"
-        " selection-color:%2; }")
+        "QComboBox:focus { border-color:%4; }"
+        "QComboBox::drop-down { border:none; width:26px; }"
+        "QComboBox::down-arrow { image:none; width:0; height:0; }"
+        "QComboBox QAbstractItemView {"
+        " background-color:%1; color:%2; border:1px solid %3; border-radius:8px;"
+        " padding:4px; outline:none;"
+        " selection-background-color:%5; selection-color:%4; }"
+        "QComboBox QAbstractItemView::item {"
+        " min-height:26px; padding:2px 8px; border-radius:6px; }")
         .arg(colCss(m_tk.control), colCss(m_tk.text), colCss(m_tk.border),
              colCss(m_tk.accent), colCss(m_tk.accentWeak)));
     connect(langCombo, QOverload<int>::of(&QComboBox::activated),
@@ -1340,60 +1622,28 @@ QWidget* SettingsWindow::buildGeneralTab() {
         addRowWidget(makeRow(Loc::t("settings.appearance"), seg, nullptr));
     }
 
-    // --- Menu-bar icon: segmented preset chooser + separate custom-image button ---
+    // --- Menu-bar icon: clipped segmented preset chooser + custom-image button ---
     {
         auto* iconWrap = new QWidget;
         auto* h = new QHBoxLayout(iconWrap);
         h->setContentsMargins(0, 0, 0, 0);
         h->setSpacing(10);
 
-        // Segmented group: 5 presets joined in one rounded, bordered strip.
-        auto* segStrip = new QWidget;
-        segStrip->setObjectName("segStrip");
-        segStrip->setStyleSheet(QStringLiteral(
-            "#segStrip { background-color:%1; border:1px solid %2; border-radius:8px; }")
-            .arg(colCss(m_tk.control), colCss(m_tk.border)));
-        auto* sh = new QHBoxLayout(segStrip);
-        sh->setContentsMargins(0, 0, 0, 0);
-        sh->setSpacing(0);
-
-        // Segment buttons: tinted to the icon token (visible on both themes); the
-        // selected one gets the accent-weak wash + accent glyph.
-        const QString segStyle = QStringLiteral(
-            "QToolButton { border:none; border-right:1px solid %1;"
-            " background:transparent; }"
-            "QToolButton:hover { background-color:%2; }"
-            "QToolButton:checked { background-color:%2; }")
-            .arg(colCss(m_tk.border), colCss(m_tk.accentWeak));
-
-        auto* group = new QButtonGroup(segStrip);
-        group->setExclusive(true);
+        // Custom image active -> no preset is highlighted; else highlight the
+        // stored preset (default "feather" = index 0).
         const bool usingCustom = s.barIconCustomPath().has_value();
         int selectedSeg = -1;
         if (!usingCustom) {
             selectedSeg = kBarIcons.indexOf(s.barIcon());
             if (selectedSeg < 0) selectedSeg = 0;
         }
-        for (int i = 0; i < kBarIcons.size(); ++i) {
-            auto* b = new QToolButton(segStrip);
-            b->setCheckable(true);
-            b->setFixedSize(34, 32);
-            b->setIconSize(QSize(17, 17));
-            b->setCursor(Qt::PointingHandCursor);
-            const QColor tint = (i == selectedSeg) ? m_tk.accent : m_tk.icon;
-            b->setIcon(barIconAssetTinted(kBarIcons.at(i), tint, 17));
-            b->setToolTip(kBarIcons.at(i));
-            // Drop the right border on the last segment.
-            QString st = segStyle;
-            if (i == kBarIcons.size() - 1)
-                st += " QToolButton { border-right:none; }";
-            b->setStyleSheet(st);
-            if (i == selectedSeg) b->setChecked(true);
-            group->addButton(b, i);
-            sh->addWidget(b);
-        }
-        connect(group, &QButtonGroup::idClicked, this, &SettingsWindow::onBarIconSegment);
-        h->addWidget(segStrip, 0, Qt::AlignVCenter);
+
+        // One rounded, bordered strip with the selection wash CLIPPED to the
+        // rounded corners (IconSegment). Click -> set preset + reload.
+        auto* strip = new IconSegment(
+            m_tk, kBarIcons, selectedSeg,
+            [this](int i) { onBarIconSegment(i); });
+        h->addWidget(strip, 0, Qt::AlignVCenter);
 
         // Thin divider, then the SEPARATE custom-image button.
         auto* div = new QFrame;
@@ -1408,7 +1658,7 @@ QWidget* SettingsWindow::buildGeneralTab() {
         custom->setIconSize(QSize(17, 17));
         custom->setCursor(Qt::PointingHandCursor);
         const QColor customTint = usingCustom ? m_tk.accent : m_tk.icon;
-        custom->setIcon(barIconAssetTinted("photo", customTint, 17));
+        custom->setIcon(presetGlyphIcon("photo", customTint, 17));
         custom->setStyleSheet(QStringLiteral(
             "QToolButton { background-color:%1; border:1px solid %2;"
             " border-radius:8px; }"
@@ -1814,11 +2064,13 @@ void SettingsWindow::addAboutSection(QVBoxLayout* generalCol) {
                              .arg(colCss(m_tk.text3)).arg(sizePt));
         return l;
     };
-    const int fs = 11;
+    // Footer copyright/version: design size is 11.5px; use 12px so it reads
+    // clearly (the old 9pt name + 10px version were noticeably too small).
+    const int fs = 12;
     auto* pre = grayText(QStringLiteral("© "), fs);
     auto* nameLink = new InlineLinkLabel(QStringLiteral("Sergey Emelyanov"),
                                          QStringLiteral("https://github.com/VeDono"),
-                                         9, m_tk.text3, m_tk.link);
+                                         fs, m_tk.text3, m_tk.link);
     auto* post = grayText(QStringLiteral(" %1 · %2")
                               .arg(year).arg(Loc::t("settings.madeInUkraine")), fs);
 
@@ -1836,9 +2088,9 @@ void SettingsWindow::addAboutSection(QVBoxLayout* generalCol) {
             .arg(QString::fromUtf8(LIGHTGET_VERSION),
                  QString::fromUtf8(LIGHTGET_EDITION)));
     version->setAlignment(Qt::AlignHCenter);
-    version->setStyleSheet(QStringLiteral("color:%1; font-size:10px;")
+    version->setStyleSheet(QStringLiteral("color:%1; font-size:12px;")
                                .arg(colCss(m_tk.text3)));
-    generalCol->addSpacing(2);
+    generalCol->addSpacing(4);
     generalCol->addWidget(version);
 }
 
@@ -1846,66 +2098,14 @@ void SettingsWindow::addAboutSection(QVBoxLayout* generalCol) {
 // Reset button + handler
 // ---------------------------------------------------------------------------
 QPushButton* SettingsWindow::makeResetButton(ResetTarget target) {
-    // 28px circular reset button with a "counterclockwise arrow" glyph. Hover:
-    // accent-weak wash + accent border/glyph. Click: spin the glyph -360°.
-    auto* b = new QPushButton;
-    b->setFixedSize(28, 28);
-    b->setCursor(Qt::PointingHandCursor);
-    b->setFocusPolicy(Qt::NoFocus);
-
-    // Tint the glyph to the reset-fg token; refresh to accent on hover via icon
-    // swap (QSS can't recolor a pixmap, so we keep the base tint and rely on the
-    // accent border/background to signal hover). The glyph stays visible in both
-    // themes because resetFg is theme-appropriate.
-    const QColor tint = m_tk.resetFg;
-    QIcon icon = barIconAssetTinted("arrow.counterclockwise", tint, 15);
-    if (icon.isNull()) icon = QIcon::fromTheme("edit-undo");
-    b->setIcon(icon);
-    b->setIconSize(QSize(15, 15));
-    if (icon.isNull()) b->setText(QStringLiteral("↺"));  // ↺ fallback glyph
+    // Painted 28px circular reset (ResetButton): crisp reload glyph, accent hover
+    // wash + border, and a -360° spin on click — no asset dependency, so the icon
+    // can never come up missing/blurry. The spin is handled inside ResetButton;
+    // we only wire the actual reset action here.
+    auto* b = new ResetButton(m_tk);
     b->setToolTip(Loc::t("reset.tooltip"));
-    b->setStyleSheet(QStringLiteral(
-        "QPushButton { border:1px solid %1; border-radius:14px;"
-        " background:transparent; color:%2; }"
-        "QPushButton:hover { background-color:%3; border-color:%4; }")
-        .arg(colCss(m_tk.border), colCss(m_tk.resetFg),
-             colCss(m_tk.accentWeak), colCss(m_tk.accent)));
-
-    connect(b, &QPushButton::clicked, this, [this, b, target]() {
-        // Spin the icon -360° (500ms) for the same feedback as the design.
-        if (!b->icon().isNull()) {
-            const QIcon base = b->icon();
-            const QSize isz = b->iconSize();
-            auto* spin = new QVariantAnimation(b);
-            spin->setStartValue(0.0);
-            spin->setEndValue(-360.0);
-            spin->setDuration(500);
-            spin->setEasingCurve(QEasingCurve::OutBack);
-            const qreal dpr = b->devicePixelRatioF();
-            QPixmap basePm = base.pixmap(isz * dpr);
-            basePm.setDevicePixelRatio(dpr);
-            connect(spin, &QVariantAnimation::valueChanged, b,
-                    [b, basePm, isz, dpr](const QVariant& v) {
-                QPixmap rot(QSize(int(isz.width() * dpr), int(isz.height() * dpr)));
-                rot.setDevicePixelRatio(dpr);
-                rot.fill(Qt::transparent);
-                QPainter p(&rot);
-                p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-                p.translate(rot.deviceIndependentSize().width() / 2.0,
-                            rot.deviceIndependentSize().height() / 2.0);
-                p.rotate(v.toReal());
-                p.translate(-rot.deviceIndependentSize().width() / 2.0,
-                            -rot.deviceIndependentSize().height() / 2.0);
-                p.drawPixmap(0, 0, basePm);
-                p.end();
-                b->setIcon(QIcon(rot));
-            });
-            connect(spin, &QVariantAnimation::finished, b,
-                    [b, base]() { b->setIcon(base); });
-            spin->start(QAbstractAnimation::DeleteWhenStopped);
-        }
-        resetTapped(target);
-    });
+    connect(b, &QPushButton::clicked, this,
+            [this, target]() { resetTapped(target); });
     return b;
 }
 

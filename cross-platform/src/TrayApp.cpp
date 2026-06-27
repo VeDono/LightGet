@@ -41,80 +41,69 @@
 
 namespace {
 
-// Small monochrome menu-item glyphs painted with QPainter into ~16px template
-// pixmaps. macOS has no freedesktop icon theme, so QIcon::fromTheme(...) returns
-// null and the menu items show no icon; these give "Take Screenshot" / "Settings"
-// / "Quit" a consistent subtle glyph. setIsMask(true) marks them as templates so
-// the menu tints them to the native appearance-adaptive gray.
-enum class MenuGlyph { Camera, Gear, Power };
+// Menu-item glyphs, painted 1:1 with the user's tray-menu design (24x24 viewBox):
+//   Capture  -> viewfinder (4 corner brackets + center dot)
+//   Settings -> sliders (two rows, each a track + knob)
+//   Power    -> power symbol (stem + ~300° ring open at the top)
+// macOS has no freedesktop icon theme, so these supply the menu icons. They are
+// NOT template masks: we paint an explicit themed-gray pixmap for the Normal
+// state and a WHITE pixmap for the Selected/Active state, so the icon turns white
+// together with the label when the row is highlighted (accent background).
+enum class MenuGlyph { Capture, Settings, Power };
 
-QIcon makeMenuGlyph(MenuGlyph kind) {
+QPixmap paintMenuGlyphPixmap(MenuGlyph kind, const QColor& color, int side) {
     const qreal dpr = 2.0;
-    const int side = 16;
     QPixmap pm(int(side * dpr), int(side * dpr));
     pm.setDevicePixelRatio(dpr);
     pm.fill(Qt::transparent);
 
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    // Paint in black; setIsMask reinterprets alpha as the template shape so the
-    // tint color is supplied by the menu, not by us.
-    QColor ink(Qt::black);
-    QPen pen(ink);
-    pen.setWidthF(1.4);
-    pen.setCapStyle(Qt::RoundCap);
-    pen.setJoinStyle(Qt::RoundJoin);
-
-    const qreal s = side;            // logical drawing size (dpr handled by pm)
-    auto px = [s](qreal f) { return f * s; };
+    const qreal sc = side / 24.0;     // design viewBox is 24x24
+    auto PT = [&](qreal x, qreal y) { return QPointF(x * sc, y * sc); };
+    QPen pen(color, 1.6 * sc, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
 
     switch (kind) {
-    case MenuGlyph::Camera: {
-        // Rounded camera body + a small "bump" for the viewfinder + a lens ring.
-        p.setPen(pen);
-        p.setBrush(Qt::NoBrush);
-        const QRectF body(px(0.12), px(0.30), px(0.76), px(0.52));
-        p.drawRoundedRect(body, px(0.10), px(0.10));
-        QPainterPath bump;
-        bump.moveTo(px(0.36), px(0.30));
-        bump.lineTo(px(0.42), px(0.20));
-        bump.lineTo(px(0.58), px(0.20));
-        bump.lineTo(px(0.64), px(0.30));
-        p.drawPath(bump);
-        p.drawEllipse(QPointF(px(0.50), px(0.56)), px(0.15), px(0.15));
+    case MenuGlyph::Capture: {
+        QPainterPath tl; tl.moveTo(PT(3, 8));  tl.lineTo(PT(3, 5.5));  tl.quadTo(PT(3, 4),  PT(4.5, 4));  tl.lineTo(PT(7, 4));
+        QPainterPath tr; tr.moveTo(PT(17, 4)); tr.lineTo(PT(19.5, 4)); tr.quadTo(PT(21, 4), PT(21, 5.5)); tr.lineTo(PT(21, 8));
+        QPainterPath br; br.moveTo(PT(21, 16));br.lineTo(PT(21, 18.5));br.quadTo(PT(21, 20),PT(19.5, 20));br.lineTo(PT(17, 20));
+        QPainterPath bl; bl.moveTo(PT(7, 20)); bl.lineTo(PT(4.5, 20));bl.quadTo(PT(3, 20), PT(3, 18.5)); bl.lineTo(PT(3, 16));
+        p.drawPath(tl); p.drawPath(tr); p.drawPath(br); p.drawPath(bl);
+        p.drawEllipse(PT(12, 12), 2.6 * sc, 2.6 * sc);
         break;
     }
-    case MenuGlyph::Gear: {
-        // Toothed ring (8 spokes) + a hub hole — a simple settings gear.
-        p.setPen(pen);
-        p.setBrush(Qt::NoBrush);
-        const QPointF c(px(0.50), px(0.50));
-        const qreal rOuter = px(0.34), rInner = px(0.22), rHub = px(0.12);
-        for (int i = 0; i < 8; ++i) {
-            const qreal a = i * (M_PI / 4.0);
-            p.drawLine(QPointF(c.x() + rInner * std::cos(a), c.y() + rInner * std::sin(a)),
-                       QPointF(c.x() + rOuter * std::cos(a), c.y() + rOuter * std::sin(a)));
-        }
-        p.drawEllipse(c, rInner, rInner);
-        p.drawEllipse(c, rHub, rHub);
+    case MenuGlyph::Settings: {
+        p.drawLine(PT(4, 7),  PT(11, 7));
+        p.drawLine(PT(15, 7), PT(20, 7));
+        p.drawEllipse(PT(13, 7), 2 * sc, 2 * sc);
+        p.drawLine(PT(4, 17), PT(9, 17));
+        p.drawLine(PT(13, 17),PT(20, 17));
+        p.drawEllipse(PT(11, 17), 2 * sc, 2 * sc);
         break;
     }
     case MenuGlyph::Power: {
-        // Power symbol: a ~300° ring open at the top + a vertical stem.
-        p.setPen(pen);
-        p.setBrush(Qt::NoBrush);
-        const QRectF ring(px(0.24), px(0.28), px(0.52), px(0.52));
-        // Start near the top gap, sweep clockwise around (Qt angles: 16ths deg,
-        // CCW positive). Open ~60° at the top.
-        p.drawArc(ring, int((90 + 30) * 16), int(-300 * 16));
-        p.drawLine(QPointF(px(0.50), px(0.18)), QPointF(px(0.50), px(0.50)));
+        p.drawLine(PT(12, 3), PT(12, 11));
+        QRectF ring(5.5 * sc, 5.5 * sc, 13 * sc, 13 * sc);   // center (12,12) r6.5
+        p.drawArc(ring, 120 * 16, -300 * 16);                // ~300°, gap at top
         break;
     }
     }
     p.end();
+    return pm;
+}
 
-    QIcon icon(pm);
-    icon.setIsMask(true);
+QIcon makeMenuGlyph(MenuGlyph kind, const QColor& normalColor) {
+    const int side = 16;
+    QIcon icon;
+    icon.addPixmap(paintMenuGlyphPixmap(kind, normalColor, side), QIcon::Normal, QIcon::Off);
+    // White for the highlighted row (Qt styles use Selected or Active for the
+    // active menu item — add both so the icon whitens on hover in every style).
+    const QPixmap white = paintMenuGlyphPixmap(kind, QColor(Qt::white), side);
+    icon.addPixmap(white, QIcon::Selected, QIcon::Off);
+    icon.addPixmap(white, QIcon::Active, QIcon::Off);
     return icon;
 }
 
@@ -299,6 +288,11 @@ QMenu* TrayApp::buildMenu() {
     menu->setAttribute(Qt::WA_TranslucentBackground, roundedCard);
     menu->setStyleSheet(menuStyleSheet(menu->palette(), roundedCard));
 
+    // Normal (un-highlighted) icon tint, matching the design's themed gray; the
+    // highlighted row swaps to white automatically (see makeMenuGlyph).
+    const bool menuDark = menu->palette().color(QPalette::Window).lightness() < 128;
+    const QColor iconColor = menuDark ? QColor("#c7c7cc") : QColor("#4a4a4f");
+
     // Capture: the label shows the global-hotkey combo as a RIGHT-ALIGNED hint
     // (design: "Take Screenshot" … "⇧⌘2"), matching the look of the real ⌘,/⌘Q
     // shortcuts on the other rows. We deliberately do NOT set a QKeySequence here:
@@ -314,7 +308,7 @@ QMenu* TrayApp::buildMenu() {
                                      Settings::instance().hotKeyDisplay()));
     // QIcon::fromTheme(...) returns null on macOS (no freedesktop theme), so paint
     // small template glyphs instead — gives each item a subtle native-style icon.
-    m_captureAction->setIcon(makeMenuGlyph(MenuGlyph::Camera));
+    m_captureAction->setIcon(makeMenuGlyph(MenuGlyph::Capture, iconColor));
     m_captureAction->setIconVisibleInMenu(true);   // macOS hides menu-item icons by default
     connect(m_captureAction, &QAction::triggered, this, &TrayApp::startCapture);
 
@@ -326,7 +320,7 @@ QMenu* TrayApp::buildMenu() {
     // double-fire risk because nothing else listens for ⌘,.
     QAction* settings = menu->addAction(Loc::t(QStringLiteral("menu.settings")));
     settings->setShortcut(QKeySequence(QKeySequence::Preferences));
-    settings->setIcon(makeMenuGlyph(MenuGlyph::Gear));
+    settings->setIcon(makeMenuGlyph(MenuGlyph::Settings, iconColor));
     settings->setIconVisibleInMenu(true);
     connect(settings, &QAction::triggered, this, &TrayApp::openSettings);
 
@@ -336,7 +330,7 @@ QMenu* TrayApp::buildMenu() {
     // wired to actually quit the app.
     QAction* quit = menu->addAction(Loc::t(QStringLiteral("menu.quit")));
     quit->setShortcut(QKeySequence(QKeySequence::Quit));
-    quit->setIcon(makeMenuGlyph(MenuGlyph::Power));
+    quit->setIcon(makeMenuGlyph(MenuGlyph::Power, iconColor));
     quit->setIconVisibleInMenu(true);
     connect(quit, &QAction::triggered, qApp, &QApplication::quit);
 
