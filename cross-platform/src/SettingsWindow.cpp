@@ -1488,7 +1488,14 @@ QWidget* SettingsWindow::buildFeaturesTab() {
         v->addLayout(block);
     };
 
-    // Small swatch/preview widget builder for the trailing chip in a row.
+    // Preview-chip builder for the trailing column on every Features row. Each
+    // chip is a fixed-height (26) box whose width hugs its content, then is LOCKED
+    // to that exact size with setFixedSize(). Locking matters: a QSS-styled
+    // QWidget's sizeHint() can disagree with its laid-out width, and CheckRow
+    // positions the trailing chip from its sizeHint — that mismatch is what pushed
+    // the wider colour-dots chip out of the shared right column. With a fixed
+    // size, sizeHint() == painted size, so every chip's RIGHT EDGE aligns to the
+    // same column and each is vertically centered in its row (see CheckRow).
     auto previewChip = [&](QWidget* inner) -> QWidget* {
         auto* chip = new QWidget;
         chip->setObjectName("chip");
@@ -1498,8 +1505,14 @@ QWidget* SettingsWindow::buildFeaturesTab() {
         auto* ch = new QHBoxLayout(chip);
         ch->setContentsMargins(11, 0, 11, 0);
         ch->setSpacing(5);
-        chip->setFixedHeight(26);
-        ch->addWidget(inner);
+        ch->addWidget(inner, 0, Qt::AlignVCenter);
+        // Resolve the content-driven width now, clamp to a shared minimum so the
+        // narrow chips (line / dot) don't look tiny, then LOCK it so sizeHint()
+        // and the actual width can never diverge.
+        ch->activate();
+        constexpr int kChipMinW = 56;   // shared minimum chip-column width
+        const int w = qMax(kChipMinW, chip->sizeHint().width());
+        chip->setFixedSize(w, 26);
         return chip;
     };
 
@@ -1523,7 +1536,6 @@ QWidget* SettingsWindow::buildFeaturesTab() {
                     inner = new ToolGlyph(t);
                 }
                 auto* chip = previewChip(inner);
-                chip->setMinimumWidth(56);
                 auto* row = new CheckRow(m_tk, Loc::t(key), s.isToolEnabled(t), chip);
                 connect(row, &QAbstractButton::toggled, this, [t](bool on) {
                     Settings::instance().setToolEnabled(t, on);
