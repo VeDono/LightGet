@@ -25,6 +25,7 @@
 #include <QGuiApplication>
 #include <QIcon>
 #include <QImage>
+#include <QKeySequence>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPalette>
@@ -129,7 +130,7 @@ QIcon makeMenuGlyph(MenuGlyph kind) {
 //   --c-accent      #007aff   hover/selected highlight (white text on it)
 // Item geometry mirrors the mockup: 8px/12px item padding, 6px item radius,
 // ~11px icon-to-label gap, comfortable left icon column.
-QString menuStyleSheet(const QPalette& pal) {
+QString menuStyleSheet(const QPalette& pal, bool rounded) {
     const bool dark = pal.color(QPalette::Window).lightness() < 128;
 
     // Light = design tokens verbatim. Dark = readable equivalents (system dark
@@ -142,11 +143,18 @@ QString menuStyleSheet(const QPalette& pal) {
     const QString accent     = QStringLiteral("#007aff");
     const QString onAccent   = QStringLiteral("#ffffff");
 
+    // The 11px card radius only paints cleanly when the menu window is
+    // translucent (so the area outside the rounded corners is transparent rather
+    // than filled with an opaque square). On platforms where we cannot guarantee
+    // translucency (X11 without a compositor) we fall back to a square card
+    // (radius 0) — see buildMenu(); the 1px border still gives a clean edge.
+    const QString cardRadius = rounded ? QStringLiteral("11px") : QStringLiteral("0px");
+
     return QStringLiteral(
         "QMenu {"
         " background: %1;"
         " border: 1px solid %2;"
-        " border-radius: 11px;"
+        " border-radius: %7;"
         " padding: 6px;"
         " color: %4;"
         "}"
@@ -174,7 +182,7 @@ QString menuStyleSheet(const QPalette& pal) {
         " background: %6;"
         " margin: 5px 9px;"
         "}")
-        .arg(menuBg, menuBorder, accent, text, onAccent, menuSep);
+        .arg(menuBg, menuBorder, accent, text, onAccent, menuSep, cardRadius);
 }
 
 } // namespace
@@ -274,35 +282,60 @@ QMenu* TrayApp::buildMenu() {
 
     // Style the popup to match tray_menu.dc.html (rounded card, accent hover,
     // hairline separators) while keeping every item/icon/action below intact.
+    //
     // Frameless + translucent background lets the QSS 11px corner radius show
-    // without a square native frame painting opaque corners behind it.
+    // without a square native frame painting opaque corners behind it. BUT a
+    // translucent top-level window only composites to transparent where the
+    // window system has a compositor: on X11 without one, WA_TranslucentBackground
+    // yields a BLACK square behind the rounded card. macOS, Windows and Wayland
+    // always composite, so enable the rounded translucent card there; on plain X11
+    // (xcb) fall back to an opaque, square — but clean — card (no translucency, no
+    // corner radius). The frameless hint is safe everywhere (it just drops the
+    // native window chrome, which a popup menu never has anyway).
+    const QString platform = QGuiApplication::platformName();
+    const bool roundedCard = (platform != QLatin1String("xcb"));   // not bare X11
     menu->setWindowFlag(Qt::FramelessWindowHint, true);
     menu->setWindowFlag(Qt::NoDropShadowWindowHint, false);
-    menu->setAttribute(Qt::WA_TranslucentBackground, true);
-    menu->setStyleSheet(menuStyleSheet(menu->palette()));
+    menu->setAttribute(Qt::WA_TranslucentBackground, roundedCard);
+    menu->setStyleSheet(menuStyleSheet(menu->palette(), roundedCard));
 
-    // Capture: title shows the hotkey as plain text, NO accelerator. The hotkey
-    // fires globally via GlobalHotkey, not via this menu item — showing an
-    // accelerator here would be misleading (matches the Swift comment).
+    // Capture: the label shows the global-hotkey combo as a RIGHT-ALIGNED hint
+    // (design: "Take Screenshot" … "⇧⌘2"), matching the look of the real ⌘,/⌘Q
+    // shortcuts on the other rows. We deliberately do NOT set a QKeySequence here:
+    // the hotkey fires GLOBALLY via GlobalHotkey, so a menu accelerator would
+    // double-fire (and showing one would be misleading — matches the Swift
+    // comment). The trick: a '\t' in a QAction's text makes a Qt-rendered QMenu
+    // draw the trailing text in the shortcut column (right-aligned), so the combo
+    // lands in the same column as the QKeySequence hints below. This relies on the
+    // menu being Qt-drawn (QSS + frameless + translucent below force that, instead
+    // of a native NSMenu where '\t' would render literally).
     m_captureAction = menu->addAction(
-        QStringLiteral("%1  (%2)").arg(Loc::t(QStringLiteral("menu.capture")),
-                                       Settings::instance().hotKeyDisplay()));
+        QStringLiteral("%1\t%2").arg(Loc::t(QStringLiteral("menu.capture")),
+                                     Settings::instance().hotKeyDisplay()));
     // QIcon::fromTheme(...) returns null on macOS (no freedesktop theme), so paint
     // small template glyphs instead — gives each item a subtle native-style icon.
     m_captureAction->setIcon(makeMenuGlyph(MenuGlyph::Camera));
     m_captureAction->setIconVisibleInMenu(true);   // macOS hides menu-item icons by default
     connect(m_captureAction, &QAction::triggered, this, &TrayApp::startCapture);
 
-    // Settings — keyEquivalent deliberately omitted (would only work with the
-    // menu open, never globally), same reasoning as the source.
+    // Settings — standard macOS Preferences shortcut (⌘,). QKeySequence::Preferences
+    // resolves to the platform-standard combo (⌘, on macOS; no default elsewhere)
+    // and is drawn RIGHT-ALIGNED in the shortcut column automatically, matching the
+    // design. Unlike the global capture hotkey this IS a real menu accelerator, so
+    // it actually fires (while the menu has focus) and opens Settings — no
+    // double-fire risk because nothing else listens for ⌘,.
     QAction* settings = menu->addAction(Loc::t(QStringLiteral("menu.settings")));
+    settings->setShortcut(QKeySequence(QKeySequence::Preferences));
     settings->setIcon(makeMenuGlyph(MenuGlyph::Gear));
     settings->setIconVisibleInMenu(true);
     connect(settings, &QAction::triggered, this, &TrayApp::openSettings);
 
     menu->addSeparator();
 
+    // Quit — standard ⌘Q (QKeySequence::Quit), right-aligned like the design and
+    // wired to actually quit the app.
     QAction* quit = menu->addAction(Loc::t(QStringLiteral("menu.quit")));
+    quit->setShortcut(QKeySequence(QKeySequence::Quit));
     quit->setIcon(makeMenuGlyph(MenuGlyph::Power));
     quit->setIconVisibleInMenu(true);
     connect(quit, &QAction::triggered, qApp, &QApplication::quit);
@@ -557,7 +590,9 @@ void TrayApp::openSettings() {
                                      Settings::instance().hotKeyModifiers());
             }
             if (m_captureAction) {
-                m_captureAction->setText(QStringLiteral("%1  (%2)").arg(
+                // Keep the right-aligned-hint form ('\t') so the refreshed combo
+                // stays in the shortcut column (see buildMenu()).
+                m_captureAction->setText(QStringLiteral("%1\t%2").arg(
                     Loc::t(QStringLiteral("menu.capture")),
                     Settings::instance().hotKeyDisplay()));
             }
