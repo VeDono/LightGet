@@ -4,55 +4,133 @@
 
 <h1 align="center">LightGet</h1>
 
-A fast, native macOS screenshot and annotation tool.
-Built with Swift + AppKit + ScreenCaptureKit — no Electron.
+<p align="center">A fast, Lightshot-style screenshot &amp; annotation tool.</p>
 
 Press a hotkey, the screen dims, you select an area and annotate it right there
 (arrows, shapes, text), then copy to the clipboard or save to a file.
 
-## Features
+---
 
-- **Global hotkey** (default ⇧⌘2) — works from anywhere, even over fullscreen apps.
-- **Multi-monitor** — every display dims and is interactive; select on any screen.
+## Two editions
+
+LightGet comes in **two editions** that share the same workflow but are built on
+different stacks. Pick whichever matches your platform:
+
+| Edition | Platforms | Stack | Where |
+| --- | --- | --- | --- |
+| **Native macOS** | macOS only | Swift + AppKit + ScreenCaptureKit (no Electron) | this branch (`main`) — `SnapEdit.xcodeproj` + `SnapEdit/` |
+| **Cross-platform** | Windows / Linux / macOS | C++ + Qt 6 Widgets | branch [`cpp-qt-port`](../../tree/cpp-qt-port) — `cross-platform/` |
+
+### Which edition should I use?
+
+- **On a Mac?** Use the **Native macOS** edition — it's the macOS-optimized option:
+  ScreenCaptureKit capture, a `CGShieldingWindowLevel` overlay that can cover the
+  menu bar, cursor/focus save-restore for fullscreen games, and a settings window
+  styled to match the system.
+- **On Windows or Linux** (or you just want one codebase everywhere) — use the
+  **Cross-platform (Qt 6)** edition. It also runs on macOS via pure Qt, which is a
+  fine fallback if you'd rather not build the native app.
+
+Both show their edition + version in the settings footer
+(`LightGet <version> · Native (macOS)` vs `LightGet <version> · Cross-platform (Qt 6)`),
+so you can always tell which one you're running.
+
+---
+
+## Features (both editions)
+
+- **Global hotkey** (default ⇧⌘2 on macOS) — trigger capture from anywhere.
 - **Live annotation** directly on the screenshot:
-  - Arrow, rectangle (outline), filled rectangle (great for censoring), freehand pen
+  - Arrow, line, rectangle (outline), filled rectangle (great for censoring), freehand pen
   - Text with color, background color, resize, and rotation
 - **Copy** to clipboard (⌘C / ⌘X / Enter) or **save** as PNG.
-- **macOS-style filenames** — `Screenshot 2026-06-01 at 19.49.10.png`, never overwrites.
-- **Settings** — change the hotkey, language (EN/RU), dim level, default save folder,
-  menu-bar icon (presets or a custom image), Retina downscaling, launch at login.
-- **Game-friendly** — forces the cursor visible when a fullscreen game has hidden it,
-  and restores focus to the game afterwards.
-- Lives in the menu bar, no Dock icon.
+- **Settings** — change the hotkey, language (EN/RU/UK), dim level, default save
+  folder, bar/tray icon, launch at login.
+- Lives in the menu bar / system tray, no Dock icon.
 
-## Requirements
+macOS-native extras (Native edition): multi-monitor interactive dimming,
+macOS-style filenames (`Screenshot 2026-06-01 at 19.49.10.png`, never overwrites),
+Retina downscaling, and forcing the cursor visible when a fullscreen game has
+hidden it.
 
-- macOS 14 (Sonoma) or later
-- Xcode 16+ to build
+---
 
-## Build & run
+## Native macOS edition
+
+Swift + AppKit build, optimized for macOS.
+
+**Requirements:** macOS 14 (Sonoma)+, Xcode 16+ to build.
+
+**Build & run:**
 
 1. Open `SnapEdit.xcodeproj` in Xcode.
 2. Press ⌘R.
 3. On first capture, grant **Screen Recording** permission:
-   System Settings → Privacy & Security → Screen Recording → enable LightGet,
+   System Settings → Privacy &amp; Security → Screen Recording → enable LightGet,
    then relaunch.
 
-## Usage
+**Usage:**
 
 - **⇧⌘2** — dim the screen and start a selection (or use the menu-bar item).
 - Drag to select an area; drag the handles to resize, drag inside to move.
-- Toolbar: cursor / arrow / rectangle / filled rectangle / pen / text, color picker,
-  undo, copy, save, close.
+- Toolbar: cursor / arrow / rectangle / filled rectangle / pen / text, color
+  picker, undo, copy, save, close.
 - **⌘C**, **⌘X**, or **Enter** — copy. **⌘S** — save. **Esc** — cancel.
-- Text tool: click to place, type, **Enter** to confirm, **Shift+Enter** for a new line,
-  drag to move, corner handles to resize and rotate, inline panel for text/background color.
+- Text tool: click to place, type, **Enter** to confirm, **Shift+Enter** for a new
+  line, drag to move, corner handles to resize and rotate, inline panel for
+  text/background color.
+
+### Project structure (Native)
+
+| File | Responsibility |
+| --- | --- |
+| `SnapEdit/main.swift` | Entry point |
+| `SnapEdit/AppDelegate.swift` | Menu bar, global hotkey, capture trigger |
+| `SnapEdit/HotKey.swift` | Global hotkey registration (Carbon) |
+| `SnapEdit/ScreenCapture.swift` | Screen capture via ScreenCaptureKit |
+| `SnapEdit/OverlayController.swift` | Transparent overlay windows on every screen |
+| `SnapEdit/OverlayView.swift` | Dimming, selection, handles, drawing, rendering |
+| `SnapEdit/ToolbarView.swift` | Floating toolbar and text color panel |
+| `SnapEdit/Annotation.swift` | Annotation model |
+| `SnapEdit/Settings.swift` | UserDefaults-backed settings |
+| `SnapEdit/SettingsWindowController.swift` | Settings window |
+| `SnapEdit/Localization.swift` | Runtime EN/UA/RU localization |
+
+---
+
+## Cross-platform edition (Windows / Linux / macOS)
+
+C++ / Qt 6 Widgets port, on branch **`cpp-qt-port`** under **`cross-platform/`**.
+
+**Requirements:** Qt 6 (Widgets, Gui, Core), a C++17 compiler, CMake ≥ 3.16
+(Ninja recommended).
+
+**Build (quick start):**
+
+```sh
+git checkout cpp-qt-port
+cd cross-platform
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="/path/to/qt6"
+cmake --build build
+./build/LightGet          # Linux / macOS
+build\LightGet.exe        # Windows
+```
+
+For per-OS Qt install commands, the optional faithful-native macOS path
+(`HAVE_MAC_NATIVE`), Wayland caveats, and full details, see
+[`cross-platform/README.md`](cross-platform/README.md) and `cross-platform/DESIGN.md`.
+
+> Pre-built binaries for all platforms are produced by CI on tagged releases
+> (see [`.github/workflows/release.yml`](.github/workflows/release.yml)).
+
+---
 
 ## Video demo
 
 https://github.com/user-attachments/assets/ac8c00cf-3264-4689-9c85-90b17594d783
 
 ## Screenshots
+
 1:
 <img width="1534" height="853" alt="exampleOfWorkOfLightGetApp" src="https://github.com/user-attachments/assets/e780e8e8-1a9f-44c9-b2b3-a010b76c5528" />
 2:
@@ -60,28 +138,13 @@ https://github.com/user-attachments/assets/ac8c00cf-3264-4689-9c85-90b17594d783
 3:
 <img width="3069" height="1717" alt="image" src="https://github.com/user-attachments/assets/2e3ad08a-2e7b-45da-9745-f1c22e0434e0" />
 
-
 <!--
 ![Selection](docs/selection.png)
 ![Annotation](docs/annotation.png)
 ![Settings](docs/settings.png)
 -->
 
-## Project structure
-
-| File | Responsibility |
-| --- | --- |
-| `main.swift` | Entry point |
-| `AppDelegate.swift` | Menu bar, global hotkey, capture trigger |
-| `HotKey.swift` | Global hotkey registration (Carbon) |
-| `ScreenCapture.swift` | Screen capture via ScreenCaptureKit |
-| `OverlayController.swift` | Transparent overlay windows on every screen |
-| `OverlayView.swift` | Dimming, selection, handles, drawing, rendering |
-| `ToolbarView.swift` | Floating toolbar and text color panel |
-| `Annotation.swift` | Annotation model |
-| `Settings.swift` | UserDefaults-backed settings |
-| `SettingsWindowController.swift` | Settings window |
-| `Localization.swift` | Runtime EN/UA/RU localization |
+---
 
 ## License
 
