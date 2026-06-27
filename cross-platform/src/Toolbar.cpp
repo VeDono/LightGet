@@ -93,8 +93,9 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    // Glyph drawing area: a centered square inset from the button.
-    const qreal inset = side * 0.30;
+    // Glyph drawing area: a centered square inset from the icon canvas. 0.20 makes
+    // the glyph fill ~0.6 of the canvas, matching the native toolbar's glyph size.
+    const qreal inset = side * 0.20;
     const QRectF box(inset, inset, side - 2 * inset, side - 2 * inset);
     const qreal w = box.width(), h = box.height();
     const qreal x0 = box.left(), y0 = box.top();
