@@ -11,6 +11,28 @@ set(CMAKE_AUTOMOC ON)   # required for Q_OBJECT classes
 set(CMAKE_AUTORCC ON)   # for the icon .qrc (assets)
 set(CMAKE_AUTOUIC OFF)  # no .ui files; UI is built in code
 
+# ---------------------------------------------------------------------------
+# Workaround: AGL was removed from recent macOS SDKs, but Qt's bundled
+# FindWrapOpenGL.cmake still hardcodes a literal `-framework AGL` fallback when
+# find_library(AGL) fails. That bogus flag makes the final link fail with
+# "framework 'AGL' not found". We can't edit the Qt SDK, so we pre-seed the
+# WrapOpenGL_AGL cache entry with a real, harmless framework (OpenGL, which Qt
+# links anyway). find_library inside Qt then sees the variable already set and
+# skips the broken literal fallback. No-op on non-Apple platforms.
+# ---------------------------------------------------------------------------
+if(APPLE)
+    # Resolve a real, existing framework for the "AGL slot". OpenGL still ships in
+    # the SDK and Qt links it anyway, so reusing it here is harmless and avoids a
+    # second copy of the same framework. FORCE overrides any stale AGL path that a
+    # previous configure may have cached (e.g. a phantom /System/.../AGL.framework
+    # that no longer exists in the active SDK).
+    find_library(_LIGHTGET_OPENGL_FW NAMES OpenGL)
+    if(_LIGHTGET_OPENGL_FW)
+        set(WrapOpenGL_AGL "${_LIGHTGET_OPENGL_FW}" CACHE FILEPATH
+            "AGL replacement (real OpenGL framework); AGL was removed from the SDK" FORCE)
+    endif()
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Widgets Gui Core)
 
 # ---------------------------------------------------------------------------

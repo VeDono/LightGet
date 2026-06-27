@@ -292,8 +292,11 @@ void ToolbarView::buildButtons() {
     m_toolButtons.clear();
     m_colorButtons.clear();
     // Action buttons aren't tracked; remove every remaining child PopButton.
+    // PopButton is a .cpp-local class without Q_OBJECT, so it can't be the target
+    // of qobject_cast. Every push button this widget creates is a PopButton, so
+    // matching its Q_OBJECT base QPushButton selects exactly the same set.
     for (QObject* child : children()) {
-        if (auto* pb = qobject_cast<PopButton*>(child)) pb->deleteLater();
+        if (auto* pb = qobject_cast<QPushButton*>(child)) pb->deleteLater();
     }
 
     qreal x = kPad;
@@ -419,12 +422,12 @@ void ToolbarView::setSelectedColor(int paletteIndex) {
 void ToolbarView::popTool(Tool t) {
     auto it = m_toolButtons.find(t);
     if (it == m_toolButtons.end()) return;
-    if (auto* pb = qobject_cast<PopButton*>(it.value())) pb->pop(1.10);
+    if (auto* pb = static_cast<PopButton*>(it.value())) pb->pop(1.10);
 }
 
 void ToolbarView::popColor(int index) {
     if (index < 0 || index >= m_colorButtons.size()) return;  // guard, matches Swift
-    if (auto* pb = qobject_cast<PopButton*>(m_colorButtons[index].second)) pb->pop(1.10);
+    if (auto* pb = static_cast<PopButton*>(m_colorButtons[index].second)) pb->pop(1.10);
 }
 
 void ToolbarView::paintEvent(QPaintEvent*) {
@@ -496,7 +499,7 @@ void TextInspectorView::build() {
         auto* b = makeSwatch(c, x1, pad);
         connect(b, &QPushButton::clicked, this, [this, c, i] {
             emit textColorRequested(c);
-            if (auto* pb = qobject_cast<PopButton*>(m_textSwatches[i].second)) pb->pop(1.18);
+            if (auto* pb = static_cast<PopButton*>(m_textSwatches[i].second)) pb->pop(1.18);
         });
         m_textSwatches.append(qMakePair(c, static_cast<QPushButton*>(b)));
         x1 += sw + gap;
@@ -522,7 +525,7 @@ void TextInspectorView::build() {
         none->show();
         connect(none, &QPushButton::clicked, this, [this] {
             emit bgColorRequested(std::nullopt);
-            if (auto* pb = qobject_cast<PopButton*>(m_bgSwatches[0].second)) pb->pop(1.18);
+            if (auto* pb = static_cast<PopButton*>(m_bgSwatches[0].second)) pb->pop(1.18);
         });
         m_bgSwatches.append(qMakePair(std::optional<QColor>(std::nullopt),
                                       static_cast<QPushButton*>(none)));
@@ -534,7 +537,7 @@ void TextInspectorView::build() {
             auto* b = makeSwatch(c, x2, y2);
             connect(b, &QPushButton::clicked, this, [this, c, idx] {
                 emit bgColorRequested(c);
-                if (auto* pb = qobject_cast<PopButton*>(m_bgSwatches[idx].second)) pb->pop(1.18);
+                if (auto* pb = static_cast<PopButton*>(m_bgSwatches[idx].second)) pb->pop(1.18);
             });
             m_bgSwatches.append(qMakePair(std::optional<QColor>(c),
                                           static_cast<QPushButton*>(b)));

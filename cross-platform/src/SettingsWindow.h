@@ -22,10 +22,10 @@
 #include "Annotation.h"
 
 #include <QDialog>
+#include <QPushButton>
 #include <cstdint>
 
 class QTabWidget;
-class QPushButton;
 class HotkeyRecorder;
 
 class SettingsWindow : public QDialog {

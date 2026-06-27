@@ -1122,8 +1122,8 @@ void OverlayWindow::positionEditControls() {
     const QRect f = m_textEditor->geometry();
     qreal x = f.left();
     qreal y = f.bottom() + 6;   // (maxY + 6) — below the field, +Y down
-    x = std::min(std::max<qreal>(0, x), width() - m_editControls->width());
-    y = std::min(std::max<qreal>(0, y), height() - m_editControls->height());
+    x = std::min<qreal>(std::max<qreal>(0, x), width() - m_editControls->width());
+    y = std::min<qreal>(std::max<qreal>(0, y), height() - m_editControls->height());
     m_editControls->move(static_cast<int>(x), static_cast<int>(y));
 }
 
@@ -1197,7 +1197,7 @@ void OverlayWindow::positionAlignmentControls() {
     const QRect f = m_textEditor->geometry();
     qreal x = f.left();
     qreal y = f.top() - m_alignControls->height() - 6;   // above the field
-    x = std::min(std::max<qreal>(0, x), width() - m_alignControls->width());
+    x = std::min<qreal>(std::max<qreal>(0, x), width() - m_alignControls->width());
     y = std::max<qreal>(0, y);
     m_alignControls->move(static_cast<int>(x), static_cast<int>(y));
 }
@@ -1230,7 +1230,7 @@ void OverlayWindow::applyAlignmentToEditor(TextAlign a) {
     fmt.setAlignment(toQtAlignment(a));
     tc.mergeBlockFormat(fmt);
     QTextCursor restore = m_textEditor->textCursor();
-    restore.setPosition(std::min(savedPos, m_textEditor->toPlainText().length()));
+    restore.setPosition(std::min<int>(savedPos, static_cast<int>(m_textEditor->toPlainText().length())));
     m_textEditor->setTextCursor(restore);
     m_textEditor->setAlignment(toQtAlignment(a));
 }
@@ -1371,8 +1371,8 @@ void OverlayWindow::positionTextInspector(const Annotation& a) {
     qreal x = box.center().x() - size.width() / 2.0;
     qreal y = box.top() - size.height() - 10;     // above the text
     if (y < 0) y = box.bottom() + 10;             // no room above -> below
-    x = std::min(std::max<qreal>(0, x), width() - size.width());
-    y = std::min(std::max<qreal>(0, y), height() - size.height());
+    x = std::min<qreal>(std::max<qreal>(0, x), width() - size.width());
+    y = std::min<qreal>(std::max<qreal>(0, y), height() - size.height());
     m_textInspector->move(static_cast<int>(x), static_cast<int>(y));
 }
 
