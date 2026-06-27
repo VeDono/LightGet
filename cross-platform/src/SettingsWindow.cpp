@@ -59,6 +59,7 @@
 #include <QDate>
 #include <QScreen>
 #include <QGuiApplication>
+#include <QStyleHints>
 #include <QCursor>
 #include <QSignalBlocker>
 #include <QFile>
@@ -71,6 +72,11 @@
 #include <QStyle>
 #include <functional>
 #include <vector>
+#include <cmath>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 // ---------------------------------------------------------------------------
 // Local helpers / data
@@ -217,6 +223,108 @@ private:
     QColor  m_base, m_link;
 };
 
+// ---- Tool-glyph preview (Features tab) -------------------------------------
+// Paints the red tool glyph shown in each Features row's preview chip, matching
+// the design SVGs: arrow / line / rectangle / filled rectangle / pen squiggle.
+// The "Text" tool uses a red "Abc" label instead (handled inline). Colour is the
+// design's red #ff453a regardless of theme (the chip bg supplies the contrast).
+class ToolGlyph : public QWidget {
+public:
+    explicit ToolGlyph(Tool tool, QWidget* parent = nullptr)
+        : QWidget(parent), m_tool(tool) {
+        setFixedSize(36, 18);
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    }
+    QSize sizeHint() const override { return QSize(36, 18); }
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QColor red("#ff453a");
+        const qreal w = width(), h = height(), cy = h / 2.0;
+        switch (m_tool) {
+        case Tool::Arrow: {
+            QPen pen(red, 2.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+            p.setPen(pen);
+            p.drawLine(QPointF(4, cy), QPointF(w - 11, cy));
+            // Filled arrowhead.
+            p.setPen(Qt::NoPen);
+            p.setBrush(red);
+            QPolygonF head;
+            head << QPointF(w - 3, cy)
+                 << QPointF(w - 12, cy - 4.6)
+                 << QPointF(w - 12, cy + 4.6);
+            p.drawPolygon(head);
+            break;
+        }
+        case Tool::Line: {
+            QPen pen(red, 2.4, Qt::SolidLine, Qt::RoundCap);
+            p.setPen(pen);
+            p.drawLine(QPointF(3, cy), QPointF(w - 3, cy));
+            break;
+        }
+        case Tool::Rectangle: {
+            QPen pen(red, 2.2);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(QRectF(3, 3, w - 6, h - 6), 2.5, 2.5);
+            break;
+        }
+        case Tool::FilledRect: {
+            p.setPen(Qt::NoPen);
+            p.setBrush(red);
+            p.drawRoundedRect(QRectF(3, 3, w - 6, h - 6), 2.5, 2.5);
+            break;
+        }
+        case Tool::Pen: {
+            QPen pen(red, 2.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            QPainterPath path;
+            const qreal x0 = 3, x1 = w - 3;
+            path.moveTo(x0, cy + 2.2);
+            path.cubicTo(x0 + (x1 - x0) * 0.15, cy - 4.4,
+                         x0 + (x1 - x0) * 0.32, cy - 4.4,
+                         (x0 + x1) / 2.0, cy);
+            path.cubicTo(x0 + (x1 - x0) * 0.68, cy + 4.4,
+                         x0 + (x1 - x0) * 0.85, cy + 4.4,
+                         x1, cy - 1.6);
+            p.drawPath(path);
+            break;
+        }
+        default: break;
+        }
+    }
+private:
+    Tool m_tool;
+};
+
+// ---- Alignment glyph (Features "Text alignment" preview chip) ---------------
+// Three horizontal lines of varying length (left-aligned paragraph), stroked in
+// the row's text color, matching the design's align icon.
+class AlignGlyph : public QWidget {
+public:
+    explicit AlignGlyph(const QColor& color, QWidget* parent = nullptr)
+        : QWidget(parent), m_color(color) {
+        setFixedSize(15, 15);
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    }
+    QSize sizeHint() const override { return QSize(15, 15); }
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QPen pen(m_color, 1.9, Qt::SolidLine, Qt::RoundCap);
+        p.setPen(pen);
+        const qreal x = 1.5, w = width() - 3.0;
+        p.drawLine(QPointF(x, 4), QPointF(x + w, 4));
+        p.drawLine(QPointF(x, 7.5), QPointF(x + w * 0.62, 7.5));
+        p.drawLine(QPointF(x, 11), QPointF(x + w * 0.80, 11));
+    }
+private:
+    QColor m_color;
+};
+
 // Version + edition (set as compile definitions in CMakeLists.txt). Defaults
 // keep the file self-contained if a definition is ever missing.
 #ifndef LIGHTGET_VERSION
@@ -290,6 +398,148 @@ void ToggleSwitch::paintEvent(QPaintEvent*) {
     p.drawEllipse(knob.translated(0, 0.8));
     p.setBrush(m_tk.knob);
     p.drawEllipse(knob);
+}
+
+// ===========================================================================
+// AppearanceSegment — 3-way Auto / Light / Dark segmented switch
+// ===========================================================================
+AppearanceSegment::AppearanceSegment(const DesignTokens& tk, int initial,
+                                     const QString& autoText, const QString& lightText,
+                                     const QString& darkText, QWidget* parent)
+    : QWidget(parent), m_tk(tk) {
+    m_labels[0] = autoText;
+    m_labels[1] = lightText;
+    m_labels[2] = darkText;
+    m_index = qBound(0, initial, 2);
+    m_pillPos = m_index;
+    setFixedSize(240, 32);
+    setCursor(Qt::PointingHandCursor);
+    setMouseTracking(true);
+    setFocusPolicy(Qt::NoFocus);
+}
+
+QSize AppearanceSegment::sizeHint() const { return QSize(240, 32); }
+
+void AppearanceSegment::setPillPos(qreal v) { m_pillPos = v; update(); }
+
+void AppearanceSegment::setIndex(int i, bool animate) {
+    i = qBound(0, i, 2);
+    if (i == m_index) return;
+    m_index = i;
+    if (animate) {
+        auto* a = new QPropertyAnimation(this, "pillPos", this);
+        a->setDuration(240);
+        a->setStartValue(m_pillPos);
+        a->setEndValue(qreal(m_index));
+        a->setEasingCurve(QEasingCurve::OutCubic);
+        a->start(QAbstractAnimation::DeleteWhenStopped);
+    } else {
+        m_pillPos = m_index;
+        update();
+    }
+    emit selected(m_index);
+}
+
+int AppearanceSegment::hitTest(const QPoint& p) const {
+    const qreal seg = width() / 3.0;
+    int i = int(p.x() / seg);
+    return qBound(0, i, 2);
+}
+
+void AppearanceSegment::mousePressEvent(QMouseEvent* e) {
+    setIndex(hitTest(e->pos()));
+}
+
+void AppearanceSegment::mouseMoveEvent(QMouseEvent* e) {
+    const int h = hitTest(e->pos());
+    if (h != m_hover) { m_hover = h; update(); }
+}
+
+void AppearanceSegment::leaveEvent(QEvent*) { m_hover = -1; update(); }
+
+void AppearanceSegment::paintEvent(QPaintEvent*) {
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    // Outer control: rounded 8px, control bg + border.
+    p.setPen(QPen(m_tk.border, 1.0));
+    p.setBrush(m_tk.control);
+    p.drawRoundedRect(r, 8, 8);
+
+    // Sliding pill under the active segment: accent-weak, 6px radius, 3px inset.
+    const qreal segW = r.width() / 3.0;
+    const qreal pillW = segW - 4.0;
+    const qreal pillX = r.left() + 2.0 + m_pillPos * segW;
+    QRectF pill(pillX, r.top() + 3.0, pillW, r.height() - 6.0);
+    p.setPen(Qt::NoPen);
+    p.setBrush(m_tk.accentWeak);
+    p.drawRoundedRect(pill, 6, 6);
+
+    // Each segment: glyph + label, accent if active else dim (text2).
+    QFont f = font();
+    f.setPointSizeF(9.0);
+    f.setWeight(QFont::Medium);
+    p.setFont(f);
+
+    for (int i = 0; i < 3; ++i) {
+        const bool active = (i == m_index);
+        const QColor c = active ? m_tk.accent : m_tk.text2;
+        const QRectF segR(r.left() + i * segW, r.top(), segW, r.height());
+
+        // Measure label so we can lay glyph + gap + text centered together.
+        const QString label = m_labels[i];
+        const int textW = p.fontMetrics().horizontalAdvance(label);
+        const qreal glyphSz = 14.0;
+        const qreal gap = 5.0;
+        const qreal totalW = glyphSz + gap + textW;
+        const qreal startX = segR.center().x() - totalW / 2.0;
+        const qreal cy = segR.center().y();
+
+        // Glyph (stroked, 1.7 width) drawn in a 14x14 box.
+        QRectF g(startX, cy - glyphSz / 2.0, glyphSz, glyphSz);
+        QPen gp(c, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(gp);
+        p.setBrush(Qt::NoBrush);
+        if (i == 0) {
+            // Auto: monitor (rect + stand).
+            QRectF mon(g.left() + 1.5, g.top() + 2.2, g.width() - 3.0, g.height() - 6.0);
+            p.drawRoundedRect(mon, 1.6, 1.6);
+            p.drawLine(QPointF(g.center().x() - 2.6, g.bottom() - 0.5),
+                       QPointF(g.center().x() + 2.6, g.bottom() - 0.5));
+            p.drawLine(QPointF(g.center().x(), mon.bottom()),
+                       QPointF(g.center().x(), g.bottom() - 1.0));
+        } else if (i == 1) {
+            // Light: sun (circle + 8 rays).
+            const qreal cx = g.center().x(), cyy = g.center().y();
+            const qreal rad = 2.6;
+            p.drawEllipse(QPointF(cx, cyy), rad, rad);
+            const qreal r0 = rad + 1.4, r1 = rad + 3.2;
+            for (int a = 0; a < 8; ++a) {
+                const qreal ang = a * (M_PI / 4.0);
+                const qreal dx = std::cos(ang), dy = std::sin(ang);
+                p.drawLine(QPointF(cx + dx * r0, cyy + dy * r0),
+                           QPointF(cx + dx * r1, cyy + dy * r1));
+            }
+        } else {
+            // Dark: crescent moon.
+            QPainterPath moon;
+            const qreal cx = g.center().x(), cyy = g.center().y();
+            moon.addEllipse(QPointF(cx - 0.3, cyy), 5.2, 5.2);
+            QPainterPath cut;
+            cut.addEllipse(QPointF(cx + 2.6, cyy - 1.4), 5.0, 5.0);
+            moon = moon.subtracted(cut);
+            p.setPen(Qt::NoPen);
+            p.setBrush(c);
+            p.drawPath(moon);
+            p.setBrush(Qt::NoBrush);
+        }
+
+        // Label.
+        p.setPen(c);
+        const QRectF tR(startX + glyphSz + gap, segR.top(), textW + 2, segR.height());
+        p.drawText(tR, Qt::AlignVCenter | Qt::AlignLeft, label);
+    }
 }
 
 // ===========================================================================
@@ -547,11 +797,13 @@ uint32_t HotkeyRecorder::carbonKeyCode(int qtKey, quint32 nativeVK) {
 // ===========================================================================
 
 SettingsWindow::SettingsWindow(QWidget* parent) : QDialog(parent) {
-    // Fixed-size window, not resizable, persists across open/close (the owner
-    // keeps the instance alive). Title bar with close only. Sized to the design's
-    // 500-wide layout; tall enough that the grouped cards + About footer breathe.
-    setWindowFlags(Qt::Window | Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
-    setFixedSize(500, 700);
+    // Frameless, fixed-size window with a custom 46px title bar (traffic lights +
+    // centered title). Persists across open/close (the owner keeps the instance
+    // alive). Sized to the design's 500-wide layout; tall enough that the grouped
+    // card + About footer breathe (design canvas is 500x894).
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+    setAttribute(Qt::WA_TranslucentBackground, true);   // rounded corners show through
+    setFixedSize(500, 820);
 
     m_recorder = new HotkeyRecorder(this);   // reused member across rebuilds
     connect(m_recorder, &HotkeyRecorder::captured, this,
@@ -585,6 +837,70 @@ void SettingsWindow::changeEvent(QEvent* e) {
     if (e->type() == QEvent::PaletteChange ||
         e->type() == QEvent::ApplicationPaletteChange) {
         if (m_stack) reloadUI();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Frameless chrome painting + title-bar drag
+// ---------------------------------------------------------------------------
+void SettingsWindow::paintEvent(QPaintEvent*) {
+    // The window is frameless + translucent; paint the rounded 12px body bg here
+    // so the panel/cards sit on the design's window background. The title bar
+    // (its own widget) paints the top with matching top-rounded corners.
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    QPainterPath path;
+    path.addRoundedRect(r, 12, 12);
+    p.fillPath(path, m_tk.bg);
+    p.setPen(QPen(m_tk.border, 1.0));
+    p.drawPath(path);
+}
+
+void SettingsWindow::mousePressEvent(QMouseEvent* e) {
+    // Begin a window drag only when the press lands on the custom title bar (and
+    // not on one of its child controls, e.g. the traffic-light dots).
+    if (e->button() == Qt::LeftButton && m_titleBar) {
+        const QPoint inBar = m_titleBar->mapFrom(this, e->pos());
+        if (m_titleBar->rect().contains(inBar)) {
+            QWidget* child = m_titleBar->childAt(inBar);
+            // Allow drag from the bar itself or the (transparent) title label.
+            if (!child || qobject_cast<QLabel*>(child)) {
+                m_dragging = true;
+                m_dragOffset = e->globalPosition().toPoint() - frameGeometry().topLeft();
+                e->accept();
+                return;
+            }
+        }
+    }
+    QDialog::mousePressEvent(e);
+}
+
+void SettingsWindow::mouseMoveEvent(QMouseEvent* e) {
+    if (m_dragging && (e->buttons() & Qt::LeftButton)) {
+        move(e->globalPosition().toPoint() - m_dragOffset);
+        e->accept();
+        return;
+    }
+    QDialog::mouseMoveEvent(e);
+}
+
+void SettingsWindow::mouseReleaseEvent(QMouseEvent* e) {
+    m_dragging = false;
+    QDialog::mouseReleaseEvent(e);
+}
+
+// ---------------------------------------------------------------------------
+// Appearance — apply chosen color scheme to the whole app
+// ---------------------------------------------------------------------------
+void SettingsWindow::applyAppearance(const QString& mode) {
+    if (auto* hints = QGuiApplication::styleHints()) {
+        if (mode == QStringLiteral("light"))
+            hints->setColorScheme(Qt::ColorScheme::Light);
+        else if (mode == QStringLiteral("dark"))
+            hints->setColorScheme(Qt::ColorScheme::Dark);
+        else
+            hints->setColorScheme(Qt::ColorScheme::Unknown);   // Auto = follow OS
     }
 }
 
@@ -733,38 +1049,46 @@ void SettingsWindow::buildUI() {
     setWindowTitle(Loc::t("settings.title"));
     resolveTokens();
 
-    // Window background = panel bg token. (Most platforms already match via the
-    // system palette, but set it so the card/border contrast is exact.)
-    setStyleSheet(QStringLiteral("SettingsWindow { background-color:%1; }")
-                      .arg(colCss(m_tk.bg)));
+    // The frameless window background is painted in paintEvent (rounded 12px).
+    // Keep the stylesheet empty here so it doesn't override that paint.
+    setStyleSheet(QString());
 
-    // ---- Centered rounded tab buttons (General / Features) ----
+    // ===== Custom title bar (46px chrome) =====
+    m_titleBar = buildTitleBar();
+
+    // ===== Folder-style tabs (General / Features) =====
+    // Top-rounded "folder tabs" sitting on the panel: the active tab uses the
+    // panel bg and drops its bottom border (so it visually merges with the
+    // panel below), inactive tabs use the muted tab-inactive bg.
     auto* tabBar = new QWidget;
     auto* tabRow = new QHBoxLayout(tabBar);
     tabRow->setContentsMargins(0, 0, 0, 0);
     tabRow->setSpacing(6);
 
+    const QColor inactiveBg = m_tk.dark ? QColor("#202023") : QColor("#e7e7ea");
     auto makeTab = [&](const QString& text) {
         auto* b = new QPushButton(text);
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
         b->setFocusPolicy(Qt::NoFocus);
+        // Folder tab: top-rounded corners, no bottom radius. Active = panel bg +
+        // strong text; inactive = muted bg + dim text (lifts to text on hover).
         b->setStyleSheet(QStringLiteral(
             "QPushButton {"
-            " padding:7px 26px; font-size:13px; font-weight:600;"
+            " padding:8px 26px; font-size:13px; font-weight:500;"
             " color:%1; background-color:%2;"
-            " border:1px solid %3; border-radius:9px; }"
+            " border:1px solid %3; border-bottom:none;"
+            " border-top-left-radius:9px; border-top-right-radius:9px;"
+            " border-bottom-left-radius:0; border-bottom-right-radius:0; }"
             "QPushButton:hover:!checked { color:%4; }"
             "QPushButton:checked {"
-            " color:%5; background-color:%6;"
-            " border:1px solid %7; }")
-            .arg(colCss(m_tk.text2),          // 1 inactive text
-                 colCss(m_tk.dark ? QColor("#202023") : QColor("#e7e7ea")),  // 2 inactive bg
-                 colCss(m_tk.border),         // 3 border
-                 colCss(m_tk.text),           // 4 hover text
-                 colCss(m_tk.accent),         // 5 active text (accent)
-                 colCss(m_tk.accentWeak),     // 6 active bg
-                 colCss(m_tk.accent)));       // 7 active border
+            " color:%4; font-weight:600; background-color:%5;"
+            " border:1px solid %3; border-bottom:none; }")
+            .arg(colCss(m_tk.text2),    // 1 inactive text
+                 colCss(inactiveBg),    // 2 inactive bg
+                 colCss(m_tk.border),   // 3 border
+                 colCss(m_tk.text),     // 4 active/hover text
+                 colCss(m_tk.bg)));     // 5 active bg = panel bg
         return b;
     };
     m_tabGeneral  = makeTab(Loc::t("tab.general"));
@@ -780,7 +1104,7 @@ void SettingsWindow::buildUI() {
     tabRow->addWidget(m_tabFeatures);
     tabRow->addStretch(1);
 
-    // ---- Stacked pages inside a rounded panel ----
+    // ===== Stacked pages inside a rounded panel =====
     m_stack = new QStackedWidget;
     m_stack->setObjectName("pagePane");
     m_stack->setStyleSheet(QStringLiteral(
@@ -798,11 +1122,75 @@ void SettingsWindow::buildUI() {
     if (m_currentTab == 1) { m_tabFeatures->setChecked(true); m_stack->setCurrentIndex(1); }
     else                   { m_tabGeneral->setChecked(true);  m_stack->setCurrentIndex(0); }
 
+    // The tab row overlaps the panel by 1px so the active tab merges into it.
+    auto* body = new QWidget;
+    auto* bodyCol = new QVBoxLayout(body);
+    bodyCol->setContentsMargins(12, 12, 12, 12);
+    bodyCol->setSpacing(0);
+    bodyCol->addWidget(tabBar, 0, Qt::AlignHCenter);
+    bodyCol->addSpacing(-1);
+    bodyCol->addWidget(m_stack, 1);
+
     auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(12, 12, 12, 12);
-    root->setSpacing(12);
-    root->addWidget(tabBar);
-    root->addWidget(m_stack, 1);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
+    root->addWidget(m_titleBar);
+    root->addWidget(body, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Custom title bar — 46px chrome: 3 traffic-light dots + centered title
+// ---------------------------------------------------------------------------
+QWidget* SettingsWindow::buildTitleBar() {
+    auto* bar = new QWidget;
+    bar->setObjectName("titleBar");
+    bar->setFixedHeight(46);
+    const QColor chrome = m_tk.dark ? QColor("#28282b") : QColor("#f5f5f7");
+    // The chrome strip carries the window's top rounded corners; only round the
+    // top so the bottom edge sits flush against the body.
+    bar->setStyleSheet(QStringLiteral(
+        "#titleBar { background-color:%1; border:1px solid %2;"
+        " border-bottom:1px solid %2;"
+        " border-top-left-radius:12px; border-top-right-radius:12px;"
+        " border-bottom-left-radius:0; border-bottom-right-radius:0; }")
+        .arg(colCss(chrome), colCss(m_tk.border)));
+
+    auto* h = new QHBoxLayout(bar);
+    h->setContentsMargins(16, 0, 16, 0);
+    h->setSpacing(8);
+
+    // Traffic-light dots (left). Red closes; yellow/green are no-ops (the window
+    // is non-minimizable / fixed-size, matching an accessory settings panel).
+    struct Dot { const char* color; };
+    const char* dotColors[3] = { "#ff5f57", "#febc2e", "#28c840" };
+    for (int i = 0; i < 3; ++i) {
+        auto* dot = new QPushButton;
+        dot->setFixedSize(12, 12);
+        dot->setCursor(Qt::PointingHandCursor);
+        dot->setFocusPolicy(Qt::NoFocus);
+        dot->setStyleSheet(QStringLiteral(
+            "QPushButton { background-color:%1; border:none; border-radius:6px; }")
+            .arg(QString::fromUtf8(dotColors[i])));
+        if (i == 0)
+            connect(dot, &QPushButton::clicked, this, &QWidget::close);
+        h->addWidget(dot, 0, Qt::AlignVCenter);
+    }
+
+    h->addStretch(1);
+
+    // Centered title overlaid across the full bar width (so the dots don't push
+    // it off-center). Use a child label positioned to span the bar.
+    auto* title = new QLabel(Loc::t("settings.title"), bar);
+    title->setAlignment(Qt::AlignCenter);
+    title->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    title->setStyleSheet(QStringLiteral(
+        "color:%1; font-size:14px; font-weight:600; background:transparent;")
+        .arg(colCss(m_tk.text)));
+    // Span the whole bar; centered text stays centered regardless of the dots.
+    title->setGeometry(0, 0, 500, 46);
+    title->lower();   // keep it behind the dots for click-through safety
+
+    return bar;
 }
 
 // ---------------------------------------------------------------------------
@@ -851,7 +1239,27 @@ QWidget* SettingsWindow::buildGeneralTab() {
              colCss(m_tk.accent), colCss(m_tk.accentWeak)));
     connect(langCombo, QOverload<int>::of(&QComboBox::activated),
             this, &SettingsWindow::onLanguageChanged);
-    addRowWidget(makeRow(Loc::t("settings.language"), langCombo, nullptr));
+    addRowWidget(makeRow(Loc::t("settings.language.plain"), langCombo, nullptr));
+
+    // --- Appearance: NEW 3-way segmented switch (Auto / Light / Dark) ---
+    {
+        const QString mode = s.appearance();
+        const int idx = (mode == QStringLiteral("light")) ? 1
+                      : (mode == QStringLiteral("dark"))  ? 2 : 0;
+        auto* seg = new AppearanceSegment(
+            m_tk, idx,
+            Loc::t("settings.appearance.auto"),
+            Loc::t("settings.appearance.light"),
+            Loc::t("settings.appearance.dark"));
+        connect(seg, &AppearanceSegment::selected, this, [this](int i) {
+            const QString m = (i == 1) ? QStringLiteral("light")
+                            : (i == 2) ? QStringLiteral("dark")
+                                       : QStringLiteral("auto");
+            Settings::instance().setAppearance(m);
+            applyAppearance(m);   // live-apply the color scheme
+        });
+        addRowWidget(makeRow(Loc::t("settings.appearance"), seg, nullptr));
+    }
 
     // --- Menu-bar icon: segmented preset chooser + separate custom-image button ---
     {
@@ -934,14 +1342,14 @@ QWidget* SettingsWindow::buildGeneralTab() {
         connect(custom, &QToolButton::clicked, this, &SettingsWindow::chooseCustomIcon);
         h->addWidget(custom, 0, Qt::AlignVCenter);
 
-        addRowWidget(makeRow(Loc::t("settings.barIcon"), iconWrap, nullptr));
+        addRowWidget(makeRow(Loc::t("settings.barIcon.plain"), iconWrap, nullptr));
     }
 
     // --- Hotkey recorder + reset ---
     m_recorder->applyTokens(m_tk);
     m_recorder->setText(s.hotKeyDisplay());
     m_recorder->setFixedSize(kFieldWidth, 32);
-    addRowWidget(makeRow(Loc::t("settings.hotkey"), m_recorder,
+    addRowWidget(makeRow(Loc::t("settings.hotkey.plain"), m_recorder,
                          makeResetButton(ResetTarget::Hotkey)));
 
     // Hint under the hotkey row (small tertiary text, right-aligned over the field).
@@ -976,7 +1384,7 @@ QWidget* SettingsWindow::buildGeneralTab() {
             .arg(colCss(m_tk.controlFill), colCss(m_tk.text),
                  colCss(m_tk.border), colCss(m_tk.accent)));
         connect(folderBtn, &QPushButton::clicked, this, &SettingsWindow::chooseFolder);
-        addRowWidget(makeRow(Loc::t("settings.saveFolder"), folderBtn,
+        addRowWidget(makeRow(Loc::t("settings.saveFolder.plain"), folderBtn,
                              makeResetButton(ResetTarget::SaveFolder)));
     }
 
@@ -1003,7 +1411,7 @@ QWidget* SettingsWindow::buildGeneralTab() {
                  colCss(m_tk.accent), colCss(m_tk.knob), colCss(m_tk.border)));
         connect(slider, &QSlider::valueChanged, this,
                 [this](int v) { onDimChanged(double(v) / 100.0); });
-        addRowWidget(makeRow(Loc::t("settings.dim"), slider,
+        addRowWidget(makeRow(Loc::t("settings.dim.plain"), slider,
                              makeResetButton(ResetTarget::Dim)));
     }
 
@@ -1094,20 +1502,29 @@ QWidget* SettingsWindow::buildFeaturesTab() {
         ch->addWidget(inner);
         return chip;
     };
-    auto coloredText = [&](const QString& txt, const QString& cssExtra) -> QLabel* {
-        auto* l = new QLabel(txt);
-        l->setStyleSheet(QStringLiteral("color:%1;%2").arg(colCss(m_tk.text), cssExtra));
-        return l;
-    };
 
     // ===== Tools in the toolbar =====
     {
         std::vector<std::function<CheckRow*()>> makers;
         for (Tool t : kFeatureTools) {
-            makers.push_back([this, t, &s]() {
+            makers.push_back([this, t, &s, &previewChip]() {
                 const QString key = QStringLiteral("tool.%1")
                                         .arg(QString::fromUtf8(toolKey(t)));
-                auto* row = new CheckRow(m_tk, Loc::t(key), s.isToolEnabled(t));
+                // Right-side preview chip showing the tool's red glyph; "Text"
+                // uses a red "Abc" label per the design.
+                QWidget* inner = nullptr;
+                if (t == Tool::Text) {
+                    auto* abc = new QLabel(QStringLiteral("Abc"));
+                    abc->setStyleSheet(QStringLiteral(
+                        "color:#ff453a; font-weight:700; font-size:14px;"
+                        " letter-spacing:0.2px;"));
+                    inner = abc;
+                } else {
+                    inner = new ToolGlyph(t);
+                }
+                auto* chip = previewChip(inner);
+                chip->setMinimumWidth(56);
+                auto* row = new CheckRow(m_tk, Loc::t(key), s.isToolEnabled(t), chip);
                 connect(row, &QAbstractButton::toggled, this, [t](bool on) {
                     Settings::instance().setToolEnabled(t, on);
                 });
@@ -1149,34 +1566,106 @@ QWidget* SettingsWindow::buildFeaturesTab() {
     }
 
     // ===== Text options =====
+    // Order mirrors the design: Font / Font size / Bold / Italic / Underline /
+    // Text alignment / Text background color. The first five back NEW Settings
+    // flags; the last two keep their existing settings/handlers.
     {
-        std::vector<std::function<CheckRow*()>> makers;
-        // Text alignment row with an alignment-glyph preview chip.
-        makers.push_back([this, &s, &previewChip, &coloredText]() {
-            auto* glyph = coloredText(QStringLiteral("≡"),
-                                      QStringLiteral("font-size:15px; font-weight:600;"));
-            auto* chip = previewChip(glyph);
-            auto* row = new CheckRow(m_tk, Loc::t("features.textAlignment"),
-                                     s.textAlignmentEnabled(), chip);
-            connect(row, &QAbstractButton::toggled, this, [](bool on) {
-                Settings::instance().setTextAlignmentEnabled(on);
-            });
+        // Generic builder: a CheckRow with a preview chip, wired to a getter/setter.
+        auto makeTextRow = [this, &previewChip](
+                const QString& labelKey, bool checkedState, QWidget* chipInner,
+                std::function<void(bool)> apply) -> CheckRow* {
+            auto* chip = previewChip(chipInner);
+            auto* row = new CheckRow(m_tk, Loc::t(labelKey), checkedState, chip);
+            connect(row, &QAbstractButton::toggled, this,
+                    [apply](bool on) { apply(on); });
             return row;
+        };
+
+        std::vector<std::function<CheckRow*()>> makers;
+
+        // Font — "Aa" upright + "Aa" italic serif.
+        makers.push_back([this, &s, makeTextRow]() {
+            auto* wrap = new QWidget;
+            auto* h = new QHBoxLayout(wrap);
+            h->setContentsMargins(0, 0, 0, 0);
+            h->setSpacing(8);
+            auto* upright = new QLabel(QStringLiteral("Aa"));
+            upright->setStyleSheet(QStringLiteral(
+                "color:%1; font-weight:600; font-size:15px;").arg(colCss(m_tk.text)));
+            auto* italic = new QLabel(QStringLiteral("Aa"));
+            italic->setStyleSheet(QStringLiteral(
+                "color:%1; font-style:italic; font-weight:500; font-size:15px;"
+                " font-family:Georgia,'Times New Roman',serif;").arg(colCss(m_tk.text)));
+            h->addWidget(upright);
+            h->addWidget(italic);
+            return makeTextRow("features.textFont", s.textFontEnabled(), wrap,
+                               [](bool on){ Settings::instance().setTextFontEnabled(on); });
         });
-        // Text background row with a highlighted-"Aa" preview chip.
-        makers.push_back([this, &s, &previewChip]() {
+
+        // Font size — small "A" + large "A".
+        makers.push_back([this, &s, makeTextRow]() {
+            auto* wrap = new QWidget;
+            auto* h = new QHBoxLayout(wrap);
+            h->setContentsMargins(0, 0, 0, 0);
+            h->setSpacing(5);
+            auto* small = new QLabel(QStringLiteral("A"));
+            small->setStyleSheet(QStringLiteral(
+                "color:%1; font-weight:700; font-size:11px;").arg(colCss(m_tk.text)));
+            auto* big = new QLabel(QStringLiteral("A"));
+            big->setStyleSheet(QStringLiteral(
+                "color:%1; font-weight:700; font-size:17px;").arg(colCss(m_tk.text)));
+            h->addWidget(small, 0, Qt::AlignBottom);
+            h->addWidget(big, 0, Qt::AlignBottom);
+            return makeTextRow("features.textFontSize", s.textFontSizeEnabled(), wrap,
+                               [](bool on){ Settings::instance().setTextFontSizeEnabled(on); });
+        });
+
+        // Bold — "Bold" in heavy weight.
+        makers.push_back([this, &s, makeTextRow]() {
+            auto* lbl = new QLabel(QStringLiteral("Bold"));
+            lbl->setStyleSheet(QStringLiteral(
+                "color:%1; font-weight:800; font-size:14px;").arg(colCss(m_tk.text)));
+            return makeTextRow("features.textBold", s.textBoldEnabled(), lbl,
+                               [](bool on){ Settings::instance().setTextBoldEnabled(on); });
+        });
+
+        // Italic — "Italic" slanted.
+        makers.push_back([this, &s, makeTextRow]() {
+            auto* lbl = new QLabel(QStringLiteral("Italic"));
+            lbl->setStyleSheet(QStringLiteral(
+                "color:%1; font-style:italic; font-weight:500; font-size:14px;")
+                .arg(colCss(m_tk.text)));
+            return makeTextRow("features.textItalic", s.textItalicEnabled(), lbl,
+                               [](bool on){ Settings::instance().setTextItalicEnabled(on); });
+        });
+
+        // Underline — "Under" underlined.
+        makers.push_back([this, &s, makeTextRow]() {
+            auto* lbl = new QLabel(QStringLiteral("Under"));
+            lbl->setStyleSheet(QStringLiteral(
+                "color:%1; text-decoration:underline; font-weight:500; font-size:14px;")
+                .arg(colCss(m_tk.text)));
+            return makeTextRow("features.textUnderline", s.textUnderlineEnabled(), lbl,
+                               [](bool on){ Settings::instance().setTextUnderlineEnabled(on); });
+        });
+
+        // Text alignment — left-align glyph (3 lines), painted.
+        makers.push_back([this, &s, makeTextRow]() {
+            auto* glyph = new AlignGlyph(m_tk.text);
+            return makeTextRow("features.textAlignment", s.textAlignmentEnabled(), glyph,
+                               [](bool on){ Settings::instance().setTextAlignmentEnabled(on); });
+        });
+
+        // Text background color — highlighted "Aa" chip.
+        makers.push_back([this, &s, makeTextRow]() {
             auto* hl = new QLabel(QStringLiteral("Aa"));
             hl->setStyleSheet(QStringLiteral(
-                "background-color:#ffd60a; color:#1c1c1e; padding:1px 6px;"
+                "background-color:#ffd60a; color:#1c1c1e; padding:2px 6px;"
                 " border-radius:4px; font-weight:600; font-size:13px;"));
-            auto* chip = previewChip(hl);
-            auto* row = new CheckRow(m_tk, Loc::t("features.textBackground"),
-                                     s.textBackgroundEnabled(), chip);
-            connect(row, &QAbstractButton::toggled, this, [](bool on) {
-                Settings::instance().setTextBackgroundEnabled(on);
-            });
-            return row;
+            return makeTextRow("features.textBackground", s.textBackgroundEnabled(), hl,
+                               [](bool on){ Settings::instance().setTextBackgroundEnabled(on); });
         });
+
         addSection(Loc::t("features.textTitle"), makers);
     }
 

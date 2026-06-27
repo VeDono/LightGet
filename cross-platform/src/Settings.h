@@ -66,6 +66,12 @@ public:
     QString language() const;                // default "en"; one of en/ru/uk
     void setLanguage(const QString& v);
 
+    // Appearance / color scheme: "auto" (follow OS), "light", or "dark".
+    // Default "auto". Applied to QGuiApplication::styleHints()->setColorScheme()
+    // at startup (main.cpp) and on toggle (SettingsWindow).
+    QString appearance() const;              // default "auto"
+    void setAppearance(const QString& v);
+
     std::optional<QString> saveFolderPath() const;   // nullopt = ask every time
     void setSaveFolderPath(const std::optional<QString>& v); // nullopt removes key
 
@@ -86,6 +92,21 @@ public:
     void setTextAlignmentEnabled(bool v);
     bool textBackgroundEnabled() const;      // key "textBg"
     void setTextBackgroundEnabled(bool v);
+
+    // --- Text style flags (default true when absent) ---
+    // Stored toggles that gate future text-tool typography controls. They are
+    // surfaced as checkbox rows on the Features tab ("Text options"); not yet
+    // consumed by the toolbar/text editor, but persisted so the UI is stateful.
+    bool textFontEnabled() const;            // key "textFont"
+    void setTextFontEnabled(bool v);
+    bool textFontSizeEnabled() const;        // key "textFontSize"
+    void setTextFontSizeEnabled(bool v);
+    bool textBoldEnabled() const;            // key "textBold"
+    void setTextBoldEnabled(bool v);
+    bool textItalicEnabled() const;          // key "textItalic"
+    void setTextItalicEnabled(bool v);
+    bool textUnderlineEnabled() const;       // key "textUnderline"
+    void setTextUnderlineEnabled(bool v);
 
 private:
     Settings();

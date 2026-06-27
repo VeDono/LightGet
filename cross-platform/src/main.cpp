@@ -11,17 +11,131 @@
 
 #include "Settings.h"
 #include "TrayApp.h"
+#include "SettingsWindow.h"
+#include "Localization.h"
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QIcon>
 #include <QLocale>
+#include <QColor>
+#include <QDir>
+#include <QImage>
+#include <QList>
+#include <QPalette>
+#include <QPixmap>
+#include <QPushButton>
+#include <QStyleHints>
+#include <QString>
+#include <QStringList>
 
 // Settings scope (overridable at build time so an alternate/parallel install
 // keeps its OWN QSettings store instead of sharing the native app's).
 #ifndef LIGHTGET_APP_NAME
 #define LIGHTGET_APP_NAME "LightGet"
 #endif
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Hidden debug harness: --render-dump <dir>
+//
+// Renders the REAL SettingsWindow (same construction path the tray app uses) to
+// PNGs so we can eyeball what it currently draws vs. the design. Produces four
+// images — {General, Features} x {light, dark}. This is NOT part of normal
+// startup: it is reached only when the flag is present, and main() exit(0)s
+// afterwards so the tray app never starts. No design/behaviour is altered.
+//
+// Theme switch: the window resolves light vs. dark purely from
+// palette().color(QPalette::Window).lightness() (see SettingsWindow::resolveTokens),
+// so we install a light or dark QApplication palette (and the matching
+// Qt::ColorScheme) BEFORE building the window, exactly mirroring an OS theme.
+// ---------------------------------------------------------------------------
+
+QPalette makeLightPalette() {
+    QPalette p;
+    p.setColor(QPalette::Window,          QColor("#f3f3f5"));
+    p.setColor(QPalette::WindowText,      QColor("#1d1d1f"));
+    p.setColor(QPalette::Base,            QColor("#ffffff"));
+    p.setColor(QPalette::AlternateBase,   QColor("#eef0f2"));
+    p.setColor(QPalette::Text,            QColor("#1d1d1f"));
+    p.setColor(QPalette::Button,          QColor("#ffffff"));
+    p.setColor(QPalette::ButtonText,      QColor("#1d1d1f"));
+    p.setColor(QPalette::Highlight,       QColor("#007aff"));
+    p.setColor(QPalette::HighlightedText, QColor("#ffffff"));
+    p.setColor(QPalette::ToolTipBase,     QColor("#ffffff"));
+    p.setColor(QPalette::ToolTipText,     QColor("#1d1d1f"));
+    return p;
+}
+
+QPalette makeDarkPalette() {
+    QPalette p;
+    p.setColor(QPalette::Window,          QColor("#1a1a1c"));
+    p.setColor(QPalette::WindowText,      QColor("#f2f2f4"));
+    p.setColor(QPalette::Base,            QColor("#262629"));
+    p.setColor(QPalette::AlternateBase,   QColor("#37373b"));
+    p.setColor(QPalette::Text,            QColor("#f2f2f4"));
+    p.setColor(QPalette::Button,          QColor("#2f2f33"));
+    p.setColor(QPalette::ButtonText,      QColor("#f2f2f4"));
+    p.setColor(QPalette::Highlight,       QColor("#0a84ff"));
+    p.setColor(QPalette::HighlightedText, QColor("#ffffff"));
+    p.setColor(QPalette::ToolTipBase,     QColor("#262629"));
+    p.setColor(QPalette::ToolTipText,     QColor("#f2f2f4"));
+    return p;
+}
+
+// Grab one tab of a freshly-built SettingsWindow under the given palette/theme
+// and save it. Building a fresh window per (theme, tab) keeps each capture clean
+// and avoids relying on changeEvent timing. Returns true on a successful save.
+bool dumpOne(const QString& dir, const QString& theme, bool dark, int tabIndex) {
+    QApplication::setPalette(dark ? makeDarkPalette() : makeLightPalette());
+    if (auto* hints = QGuiApplication::styleHints())
+        hints->setColorScheme(dark ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light);
+
+    SettingsWindow w;
+    w.setPalette(QApplication::palette());   // ensure the window resolves the theme
+    w.ensurePolished();
+
+    // Switch the active tab via the real tab button (checkable, in the exclusive
+    // button group wired to the stacked pages) — no private API, exercises the
+    // actual design path. Tab 0 (General) is the default, so only act for tab 1.
+    if (tabIndex == 1) {
+        const QString featuresLabel = Loc::t(QStringLiteral("tab.features"));
+        const QList<QPushButton*> buttons = w.findChildren<QPushButton*>();
+        for (QPushButton* b : buttons) {
+            if (b->isCheckable() && b->text() == featuresLabel) {
+                b->click();   // switches the stacked page to Features (idClicked)
+                break;
+            }
+        }
+    }
+
+    // Let layout/styling settle before grabbing.
+    QApplication::processEvents();
+
+    const QString tabName = (tabIndex == 1) ? QStringLiteral("features")
+                                            : QStringLiteral("general");
+    const QString path =
+        QDir(dir).filePath(QStringLiteral("current_%1_%2.png").arg(tabName, theme));
+
+    const QPixmap pm = w.grab();
+    const QImage img = pm.toImage();
+    return img.save(path, "PNG");
+}
+
+// Drive all four dumps; returns process exit code (0 = all saved).
+int runRenderDump(const QString& dir) {
+    QDir().mkpath(dir);
+    bool ok = true;
+    ok &= dumpOne(dir, QStringLiteral("light"), /*dark=*/false, /*tab=*/0);
+    ok &= dumpOne(dir, QStringLiteral("dark"),  /*dark=*/true,  /*tab=*/0);
+    ok &= dumpOne(dir, QStringLiteral("light"), /*dark=*/false, /*tab=*/1);
+    ok &= dumpOne(dir, QStringLiteral("dark"),  /*dark=*/true,  /*tab=*/1);
+    return ok ? 0 : 1;
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
     // Identify the QSettings store BEFORE anything reads Settings. These static
@@ -51,6 +165,37 @@ int main(int argc, char** argv) {
 
     // Tray-only app: never quit just because a transient window closed.
     QApplication::setQuitOnLastWindowClosed(false);
+
+    // Apply the saved Appearance preference to the app color scheme (Qt 6.8):
+    // "light"/"dark" force it; "auto" follows the OS. Mirrors what the Settings
+    // window's Appearance segment does live. Skipped under --render-dump below,
+    // where each capture forces its own scheme.
+    {
+        const QStringList ddArgs = QCoreApplication::arguments();
+        if (!ddArgs.contains(QStringLiteral("--render-dump"))) {
+            if (auto* hints = QGuiApplication::styleHints()) {
+                const QString appr = Settings::instance().appearance();
+                if (appr == QStringLiteral("light"))
+                    hints->setColorScheme(Qt::ColorScheme::Light);
+                else if (appr == QStringLiteral("dark"))
+                    hints->setColorScheme(Qt::ColorScheme::Dark);
+                else
+                    hints->setColorScheme(Qt::ColorScheme::Unknown);
+            }
+        }
+    }
+
+    // Hidden debug harness: "--render-dump <dir>" renders the real SettingsWindow
+    // to PNGs (General/Features x light/dark) and exits WITHOUT starting the tray.
+    // Behind the flag so normal startup is completely unaffected.
+    {
+        const QStringList args = QCoreApplication::arguments();
+        const int idx = args.indexOf(QStringLiteral("--render-dump"));
+        if (idx >= 0 && idx + 1 < args.size()) {
+            const int code = runRenderDump(args.at(idx + 1));
+            return code;   // never reach TrayApp / app.exec()
+        }
+    }
 
     TrayApp tray;
     tray.start();   // build tray, register hotkey (applicationDidFinishLaunching)

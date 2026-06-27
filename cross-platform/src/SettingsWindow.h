@@ -27,6 +27,7 @@
 #include <QPushButton>
 #include <QAbstractButton>
 #include <QColor>
+#include <QPoint>
 #include <cstdint>
 #include <functional>
 
@@ -34,6 +35,9 @@ class QStackedWidget;
 class HotkeyRecorder;
 class QFrame;
 class QVBoxLayout;
+class QLabel;
+class QMouseEvent;
+class AppearanceSegment;
 
 // ---------------------------------------------------------------------------
 // Design tokens — resolved per theme (light / dark) from the window palette.
@@ -62,6 +66,10 @@ signals:
 
 protected:
     void changeEvent(QEvent* e) override;   // rebuild on palette/theme switch
+    void paintEvent(QPaintEvent* e) override;       // frameless rounded background
+    void mousePressEvent(QMouseEvent* e) override;  // start title-bar drag
+    void mouseMoveEvent(QMouseEvent* e) override;   // perform title-bar drag
+    void mouseReleaseEvent(QMouseEvent* e) override;
 
 private:
     // Reset targets (raw int parity with Swift ResetTarget). language=0 is a
@@ -71,9 +79,15 @@ private:
 
     void reloadUI();                 // full teardown + rebuild of both tabs
     void buildUI();
+    QWidget* buildTitleBar();        // 46px chrome: traffic lights + centered title
     QWidget* buildGeneralTab();
     QWidget* buildFeaturesTab();
     void addAboutSection(QVBoxLayout* generalCol);
+
+    // Apply the chosen appearance ("auto"/"light"/"dark") to the app color scheme
+    // via QGuiApplication::styleHints()->setColorScheme(). Called when the
+    // Appearance segment changes.
+    void applyAppearance(const QString& mode);
 
     QPushButton* makeResetButton(ResetTarget target);
     void resetTapped(ResetTarget target);   // confirm dialog -> reset -> reloadUI
@@ -105,10 +119,15 @@ private:
     QWidget* makeToggleRow(const QString& label, QWidget* toggle, QPushButton* reset);
 
     QStackedWidget* m_stack = nullptr;       // General / Features pages
-    QPushButton* m_tabGeneral = nullptr;     // centered rounded tab buttons
+    QPushButton* m_tabGeneral = nullptr;     // centered rounded folder tab buttons
     QPushButton* m_tabFeatures = nullptr;
     int m_currentTab = 0;                    // 0 = general, 1 = features
     HotkeyRecorder* m_recorder = nullptr;    // reused member across rebuilds
+
+    // Title-bar drag state (frameless window dragged by the custom chrome).
+    QWidget* m_titleBar = nullptr;           // the draggable 46px chrome strip
+    bool     m_dragging = false;
+    QPoint   m_dragOffset;                   // cursor -> window top-left at press
 
     // Preset bar icons (asset names mirroring SF Symbols), exactly 5 (Spec 5 §5.2).
     // {"scissors","camera.viewfinder","crop","rectangle.dashed","paintbrush.pointed.fill"}
@@ -165,6 +184,46 @@ private:
     QString  m_label;
     QWidget* m_trailing = nullptr;
     bool     m_hover = false;
+};
+
+// ---------------------------------------------------------------------------
+// AppearanceSegment — 3-way segmented switch (Auto / Light / Dark) matching the
+// design: a 240x32 rounded, bordered control with an accent-weak "pill" that
+// slides under the active segment, each segment showing a small glyph + label.
+// The active segment's text/icon paints in the accent color, the rest in the
+// dim (text2) color. Emits selected(int) where 0=Auto, 1=Light, 2=Dark.
+// Index ↔ Settings::appearance: 0="auto", 1="light", 2="dark".
+// ---------------------------------------------------------------------------
+class AppearanceSegment : public QWidget {
+    Q_OBJECT
+    Q_PROPERTY(qreal pillPos READ pillPos WRITE setPillPos)
+public:
+    AppearanceSegment(const DesignTokens& tk, int initial,
+                      const QString& autoText, const QString& lightText,
+                      const QString& darkText, QWidget* parent = nullptr);
+    QSize sizeHint() const override;
+    int currentIndex() const { return m_index; }
+    void setIndex(int i, bool animate = true);
+    qreal pillPos() const { return m_pillPos; }
+    void setPillPos(qreal v);
+
+signals:
+    void selected(int index);
+
+protected:
+    void paintEvent(QPaintEvent*) override;
+    void mousePressEvent(QMouseEvent*) override;
+    void mouseMoveEvent(QMouseEvent*) override;
+    void leaveEvent(QEvent*) override;
+
+private:
+    int hitTest(const QPoint& p) const;   // which segment (0..2) is under p, or -1
+
+    DesignTokens m_tk;
+    QString m_labels[3];
+    int   m_index = 0;
+    int   m_hover = -1;
+    qreal m_pillPos = 0.0;   // animated segment index position (0..2)
 };
 
 // ---------------------------------------------------------------------------

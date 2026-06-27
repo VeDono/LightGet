@@ -19,12 +19,18 @@ constexpr char kDim[]           = "dimOpacity";
 constexpr char kDownscale[]     = "downscaleRetina";
 constexpr char kAnimatedDim[]   = "animatedDim";
 constexpr char kLanguage[]      = "language";
+constexpr char kAppearance[]    = "appearance";
 constexpr char kSaveFolder[]    = "saveFolder";
 constexpr char kBarIcon[]       = "barIcon";
 constexpr char kBarIconCustom[] = "barIconCustom";
 constexpr char kShowColors[]    = "showColors";
 constexpr char kTextAlign[]     = "textAlign";
 constexpr char kTextBg[]        = "textBg";
+constexpr char kTextFont[]      = "textFont";
+constexpr char kTextFontSize[]  = "textFontSize";
+constexpr char kTextBold[]      = "textBold";
+constexpr char kTextItalic[]    = "textItalic";
+constexpr char kTextUnderline[] = "textUnderline";
 } // namespace
 
 Settings& Settings::instance() {
@@ -138,6 +144,18 @@ void Settings::setLanguage(const QString& v) {
     m_s.setValue(kLanguage, v);
 }
 
+QString Settings::appearance() const {
+    // "auto" follows the OS color scheme; "light"/"dark" force it. Default "auto".
+    const QString v = m_s.value(kAppearance, QStringLiteral("auto")).toString();
+    if (v == QStringLiteral("light") || v == QStringLiteral("dark"))
+        return v;
+    return QStringLiteral("auto");
+}
+
+void Settings::setAppearance(const QString& v) {
+    m_s.setValue(kAppearance, v);
+}
+
 std::optional<QString> Settings::saveFolderPath() const {
     if (!m_s.contains(kSaveFolder))
         return std::nullopt;
@@ -211,4 +229,46 @@ bool Settings::textBackgroundEnabled() const {
 
 void Settings::setTextBackgroundEnabled(bool v) {
     m_s.setValue(kTextBg, v);
+}
+
+// --- Text style flags (default true when absent) ---
+
+bool Settings::textFontEnabled() const {
+    return m_s.value(kTextFont, true).toBool();
+}
+
+void Settings::setTextFontEnabled(bool v) {
+    m_s.setValue(kTextFont, v);
+}
+
+bool Settings::textFontSizeEnabled() const {
+    return m_s.value(kTextFontSize, true).toBool();
+}
+
+void Settings::setTextFontSizeEnabled(bool v) {
+    m_s.setValue(kTextFontSize, v);
+}
+
+bool Settings::textBoldEnabled() const {
+    return m_s.value(kTextBold, true).toBool();
+}
+
+void Settings::setTextBoldEnabled(bool v) {
+    m_s.setValue(kTextBold, v);
+}
+
+bool Settings::textItalicEnabled() const {
+    return m_s.value(kTextItalic, true).toBool();
+}
+
+void Settings::setTextItalicEnabled(bool v) {
+    m_s.setValue(kTextItalic, v);
+}
+
+bool Settings::textUnderlineEnabled() const {
+    return m_s.value(kTextUnderline, true).toBool();
+}
+
+void Settings::setTextUnderlineEnabled(bool v) {
+    m_s.setValue(kTextUnderline, v);
 }
