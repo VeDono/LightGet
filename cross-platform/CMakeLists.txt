@@ -112,6 +112,13 @@ target_compile_definitions(LightGet PRIVATE
 # Per-platform: global hotkey + capture + cursor/focus need native APIs.
 # ---------------------------------------------------------------------------
 if(WIN32)
+    # GUI subsystem = no console window for the tray-only app. /ENTRY:mainCRTStartup
+    # keeps our plain int main() as the entry point (the CRT startup calls it), so
+    # we don't need Qt's WinMain entry-point library. Without this the .exe launches
+    # an empty terminal window next to the (window-less) tray app.
+    if(MSVC)
+        target_link_options(LightGet PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
+    endif()
     # RegisterHotKey / WM_HOTKEY, BitBlt/DXGI capture, SetForegroundWindow.
     target_link_libraries(LightGet PRIVATE user32 gdi32)
     # NOMINMAX: windows.h's min/max macros otherwise clash with std::min/max and
