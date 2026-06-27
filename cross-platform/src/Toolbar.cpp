@@ -321,6 +321,15 @@ QIcon makeSwatch(const QColor& color, bool selected, int d = 18) {
 // A QPushButton that pops (scales 1.0->peak->1.0 about its center) on demand and
 // optionally paints a checkmark / colored fill itself. Replaces the Swift
 // ActionButton + CALayer transform animation.
+//
+// CLIPPING FIX (task 1): the pop scales the button content via a QTransform in
+// paintEvent, which is clipped to the widget's own rect. A >1 scale therefore
+// clips anything that reaches the button edge. Two things used to reach the edge:
+//   - the glyph icon (drawn at full kButtonSize) — now rendered SMALLER than the
+//     button via setIconSize(~24px) so a 1.10x pop stays inside the 30px bounds;
+//   - the selected-tool blue highlight (was a full-bleed QSS background) — now
+//     painted HERE as a rounded rect INSET from the edge, so it scales without
+//     touching the clip boundary. The QSS background is dropped for tool buttons.
 class PopButton : public QPushButton {
 public:
     explicit PopButton(QWidget* parent = nullptr) : QPushButton(parent) {
@@ -329,6 +338,20 @@ public:
         setFlat(true);
         setAttribute(Qt::WA_TranslucentBackground, true);
         setStyleSheet(QStringLiteral("QPushButton{border:none;background:transparent;}"));
+    }
+
+    // Selected-tool highlight: an inset rounded blue rect painted by this widget
+    // (NOT a full-bleed QSS background) so it stays clear of the clip boundary
+    // and scales cleanly with the pop. Pass a non-null color to enable.
+    void setHighlight(const QColor& color, qreal inset = 3.0, qreal radius = 6.0) {
+        m_highlight = color;
+        m_highlightInset = inset;
+        m_highlightRadius = radius;
+        update();
+    }
+    void clearHighlight() {
+        m_highlight = QColor();   // invalid -> no highlight
+        update();
     }
 
     // Trigger the center-anchored pop. peak 1.10 (toolbar) / 1.18 (inspector).
@@ -356,20 +379,41 @@ public:
 
 protected:
     void paintEvent(QPaintEvent* e) override {
-        if (qFuzzyCompare(m_scale, qreal(1.0))) {
+        const bool popping = !qFuzzyCompare(m_scale, qreal(1.0));
+        if (!popping && !m_highlight.isValid()) {
+            // Plain, unscaled, no self-drawn highlight -> let the style paint it.
             QPushButton::paintEvent(e);
             return;
         }
-        // Scale about center without shifting (matches the Swift centered() matrix).
+
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        const QPointF c(width() / 2.0, height() / 2.0);
-        QTransform t;
-        t.translate(c.x(), c.y());
-        t.scale(m_scale, m_scale);
-        t.translate(-c.x(), -c.y());
-        p.setTransform(t);
-        // Re-render the base button content under the transform.
+
+        // Scale about center without shifting (matches the Swift centered() matrix).
+        // The same transform covers the inset highlight AND the icon, so both pop
+        // together — and both stay inside the widget rect (highlight is inset,
+        // icon is sub-button-size), so neither clips at the scaled edge.
+        if (popping) {
+            const QPointF c(width() / 2.0, height() / 2.0);
+            QTransform t;
+            t.translate(c.x(), c.y());
+            t.scale(m_scale, m_scale);
+            t.translate(-c.x(), -c.y());
+            p.setTransform(t);
+        }
+
+        // Inset rounded highlight (selected tool) painted by us, not via QSS.
+        if (m_highlight.isValid()) {
+            const QRectF hr = QRectF(rect()).adjusted(
+                m_highlightInset, m_highlightInset, -m_highlightInset, -m_highlightInset);
+            p.setPen(Qt::NoPen);
+            p.setBrush(m_highlight);
+            p.drawRoundedRect(hr, m_highlightRadius, m_highlightRadius);
+        }
+
+        // Re-render the base button content (the icon) under the transform. The
+        // icon is sized below kButtonSize (setIconSize ~24px), so it never reaches
+        // the clip boundary even at the pop peak.
         QStyleOptionButton opt;
         initStyleOption(&opt);
         style()->drawControl(QStyle::CE_PushButton, &opt, &p, this);
@@ -378,6 +422,9 @@ protected:
 private:
     QVariantAnimation* m_anim = nullptr;
     qreal m_scale = 1.0;
+    QColor m_highlight;            // invalid = no selected-tool highlight
+    qreal  m_highlightInset = 3.0;
+    qreal  m_highlightRadius = 6.0;
 };
 
 } // namespace
@@ -427,8 +474,10 @@ void ToolbarView::buildButtons() {
         if (!Settings::instance().isToolEnabled(ts.tool)) continue;
         const Tool tool = ts.tool;
         auto* b = new PopButton(this);
-        b->setIcon(makeGlyph(QString::fromLatin1(ts.symbol), Qt::white, kButtonSize));
-        b->setIconSize(QSize(kButtonSize, kButtonSize));
+        // Render the glyph at kIconSize (< kButtonSize) and center it in the
+        // button: the smaller icon leaves margin so the 1.10x pop never clips.
+        b->setIcon(makeGlyph(QString::fromLatin1(ts.symbol), Qt::white, kIconSize));
+        b->setIconSize(QSize(kIconSize, kIconSize));
         b->setGeometry(int(x), kPad, kButtonSize, kButtonSize);
         connect(b, &QPushButton::clicked, this, [this, tool] {
             setSelectedTool(tool);
@@ -484,8 +533,9 @@ void ToolbarView::buildButtons() {
     };
     for (const auto& a : actions) {
         auto* b = new PopButton(this);
-        b->setIcon(makeGlyph(QString::fromLatin1(a.symbol), Qt::white, kButtonSize));
-        b->setIconSize(QSize(kButtonSize, kButtonSize));
+        // Same sub-button-size glyph as the tools so the action pop never clips.
+        b->setIcon(makeGlyph(QString::fromLatin1(a.symbol), Qt::white, kIconSize));
+        b->setIconSize(QSize(kIconSize, kIconSize));
         b->setGeometry(int(x), kPad, kButtonSize, kButtonSize);
         auto sig = a.sig;
         connect(b, &QPushButton::clicked, this, [this, sig] { (this->*sig)(); });
@@ -502,12 +552,13 @@ void ToolbarView::setSelectedTool(Tool t) {
     m_selectedTool = t;
     for (auto it = m_toolButtons.begin(); it != m_toolButtons.end(); ++it) {
         const bool sel = (it.key() == t);
-        QPushButton* b = it.value();
-        // Blue rounded background behind the icon for the selected tool.
-        b->setStyleSheet(sel
-            ? QStringLiteral("QPushButton{border:none;border-radius:5px;background:%1;}")
-                  .arg(kSelectedBlue.name())
-            : QStringLiteral("QPushButton{border:none;background:transparent;}"));
+        // Highlight is painted by the PopButton as an INSET rounded rect (~3px
+        // from the edge), not a full-bleed QSS background — so it never reaches
+        // the clip boundary and scales cleanly with the pop (task 1). The QSS
+        // stays transparent/borderless for every tool button.
+        auto* b = static_cast<PopButton*>(it.value());
+        if (sel) b->setHighlight(kSelectedBlue, /*inset=*/3.0, /*radius=*/6.0);
+        else     b->clearHighlight();
     }
 }
 

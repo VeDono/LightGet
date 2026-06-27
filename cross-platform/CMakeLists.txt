@@ -90,6 +90,18 @@ target_link_libraries(LightGet PRIVATE
 # In-app settings scope = APP_NAME (so an alternate build keeps its own QSettings).
 target_compile_definitions(LightGet PRIVATE LIGHTGET_APP_NAME="${APP_NAME}")
 
+# Version + edition label, surfaced in the settings About/footer so the two
+# builds (this Qt port vs the native macOS app) are easy to tell apart.
+# NOTE: the edition string contains parentheses, which trip CMake's
+# "function-style macro" heuristic and get DROPPED if written inline. Routing the
+# value through a set() variable first makes CMake quote it correctly so the full
+# "Cross-platform (Qt 6)" reaches the compiler (verified in the generated build).
+set(LIGHTGET_VERSION "1.0.0" CACHE STRING "Product version string")
+set(LIGHTGET_EDITION "Cross-platform (Qt 6)" CACHE STRING "Build edition label")
+target_compile_definitions(LightGet PRIVATE
+    LIGHTGET_VERSION="${LIGHTGET_VERSION}"
+    LIGHTGET_EDITION="${LIGHTGET_EDITION}")
+
 # ---------------------------------------------------------------------------
 # Per-platform: global hotkey + capture + cursor/focus need native APIs.
 # ---------------------------------------------------------------------------

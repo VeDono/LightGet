@@ -84,6 +84,9 @@ private:
     void buildButtons();                        // layout algorithm (Spec 4 §2.4)
 
     static constexpr int kButtonSize = 30;
+    // Glyph icon rendered SMALLER than the button so the click pop (scale 1.10)
+    // stays inside the 30px bounds and never clips (task 1). 24 * 1.10 = 26.4 < 30.
+    static constexpr int kIconSize = 24;
     static constexpr int kPad = 6;
 
     QHash<Tool, QPushButton*> m_toolButtons;

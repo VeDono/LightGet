@@ -39,6 +39,14 @@
 #include <ApplicationServices/ApplicationServices.h>  // CGPreflight/RequestScreenCaptureAccess
 #endif
 
+// macOS-native helpers (Objective-C++ in src/mac/MacNative.mm). Declared as plain
+// `extern` C++ symbols, mirroring the other MacNative externs (TrayApp_*, etc.).
+// Only linked / called when HAVE_MAC_NATIVE is defined.
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+extern bool MacNative_hasScreenCapturePermission();
+extern void MacNative_requestScreenCapturePermission();
+#endif
+
 namespace ScreenCapture {
 
 // ---------------------------------------------------------------------------
@@ -51,17 +59,28 @@ namespace ScreenCapture {
 // ---------------------------------------------------------------------------
 
 bool preflightPermission() {
-#if defined(Q_OS_MACOS)
-    // Available on macOS 10.15+. Returns false until the user grants
-    // Screen Recording in System Settings → Privacy & Security.
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+    // Faithful path: ask the native helper (CGPreflightScreenCaptureAccess).
+    // Returns false until the user grants Screen Recording in
+    // System Settings → Privacy & Security. This is the authoritative gate
+    // TrayApp::startCapture checks BEFORE showing any dim/overlay (task 5).
+    return MacNative_hasScreenCapturePermission();
+#elif defined(Q_OS_MACOS)
+    // macOS without the native .mm: call CoreGraphics directly. Available on
+    // macOS 10.15+.
     return CGPreflightScreenCaptureAccess();
 #else
+    // No per-app screen-capture permission gate off macOS.
     return true;
 #endif
 }
 
 void requestPermission() {
-#if defined(Q_OS_MACOS)
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+    // Faithful path: ask the native helper (CGRequestScreenCaptureAccess) to show
+    // the system prompt. preflightPermission() remains the authoritative gate.
+    MacNative_requestScreenCapturePermission();
+#elif defined(Q_OS_MACOS)
     // Triggers the system prompt the first time; thereafter a no-op returning
     // the current grant state (which we ignore — preflightPermission() is the
     // authoritative gate the caller checks).

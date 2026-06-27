@@ -104,3 +104,23 @@ void TrayApp_restoreApp(void* handle) {
     if ([app isEqual:[NSRunningApplication currentApplication]]) return;
     [app activateWithOptions:NSApplicationActivateAllWindows];
 }
+
+// ---------------------------------------------------------------------------
+// MacNative_hasScreenCapturePermission — true iff this app already holds the
+// Screen Recording (TCC) grant. Non-prompting: it only reports the current
+// state, so the caller can decide whether to bail before showing any overlay.
+// CGPreflightScreenCaptureAccess is available on macOS 10.15+.
+// ---------------------------------------------------------------------------
+bool MacNative_hasScreenCapturePermission() {
+    return CGPreflightScreenCaptureAccess();
+}
+
+// ---------------------------------------------------------------------------
+// MacNative_requestScreenCapturePermission — trigger the system Screen Recording
+// permission prompt (the first time; thereafter a no-op that just returns the
+// current grant). The boolean result is ignored here — preflight is the
+// authoritative gate the caller re-checks.
+// ---------------------------------------------------------------------------
+void MacNative_requestScreenCapturePermission() {
+    (void)CGRequestScreenCaptureAccess();
+}

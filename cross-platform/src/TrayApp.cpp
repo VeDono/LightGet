@@ -243,11 +243,20 @@ void TrayApp::rebuildMenu() {
 }
 
 void TrayApp::onTrayActivated(int reason) {
+#if !defined(Q_OS_MAC)
     // On platforms where a left-click does not auto-open the context menu,
     // mirror the macOS status-item behaviour by popping the menu at the cursor.
+    //
+    // On macOS, QSystemTrayIcon::setContextMenu() ALREADY shows the menu on both
+    // left- and right-click, so popping it here too produced TWO overlapping
+    // menus ("two sets of options"). Let the system context menu handle it there;
+    // only platforms without that auto-open behaviour need the manual popup.
     if (reason == QSystemTrayIcon::Trigger && m_menu && m_tray) {
         m_menu->popup(QCursor::pos());
     }
+#else
+    Q_UNUSED(reason);
+#endif
 }
 
 // ===========================================================================

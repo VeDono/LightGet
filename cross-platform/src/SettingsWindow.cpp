@@ -39,6 +39,7 @@
 #include <QDir>
 #include <QIcon>
 #include <QPixmap>
+#include <QPainter>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QEnterEvent>
@@ -76,6 +77,24 @@ const std::vector<Tool> kFeatureTools = {
     Tool::Pen, Tool::Text
 };
 
+// Recolor an alpha-only (white-on-transparent) glyph pixmap to a solid `tint`,
+// preserving the alpha channel. The bundled assets are white-on-transparent
+// (see assets.qrc), which is invisible on the LIGHT settings background — this
+// stamps them in a dark, readable color instead (task 3).
+QPixmap tintPixmap(const QPixmap& src, const QColor& tint) {
+    if (src.isNull()) return src;
+    QPixmap out(src.size());
+    out.setDevicePixelRatio(src.devicePixelRatio());
+    out.fill(Qt::transparent);
+    QPainter p(&out);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.drawPixmap(0, 0, src);                       // lay down the alpha shape
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(out.rect(), tint);                  // recolor opaque areas to tint
+    p.end();
+    return out;
+}
+
 // Resolve a preset bar-icon asset to a QIcon. SF Symbols are macOS-only, so we
 // load a bundled replacement asset from the qrc (assets.qrc maps these names);
 // fall back to a themed icon, then an empty icon, so the UI still builds.
@@ -85,6 +104,23 @@ QIcon barIconAsset(const QString& name) {
     QIcon theme = QIcon::fromTheme(name);
     if (!theme.isNull()) return theme;
     return QIcon();
+}
+
+// Same as barIconAsset() but recolored to a tint visible on the light settings
+// background. The qrc PNGs are white-on-transparent (invisible by default), so
+// the menu-bar-icon chooser / reset glyphs MUST be tinted dark here. Renders a
+// crisp 2x pixmap so the recolor stays sharp on Retina. `size` is in points.
+QIcon barIconAssetTinted(const QString& name, const QColor& tint, int size = 18) {
+    QIcon base = barIconAsset(name);
+    if (base.isNull()) {
+        QIcon theme = QIcon::fromTheme(name);
+        if (!theme.isNull()) base = theme;
+    }
+    if (base.isNull()) return QIcon();
+    const qreal dpr = 2.0;
+    QPixmap pm = base.pixmap(QSize(int(size * dpr), int(size * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    return QIcon(tintPixmap(pm, tint));
 }
 
 // Open a URL in the default browser (mirrors NSWorkspace.shared.open).
@@ -138,6 +174,15 @@ private:
     }
     QString m_url;
 };
+
+// Version + edition (set as compile definitions in CMakeLists.txt). Defaults
+// keep the file self-contained if a definition is ever missing.
+#ifndef LIGHTGET_VERSION
+#define LIGHTGET_VERSION "1.0.0"
+#endif
+#ifndef LIGHTGET_EDITION
+#define LIGHTGET_EDITION "Cross-platform (Qt 6)"
+#endif
 
 } // namespace
 
@@ -362,6 +407,22 @@ void SettingsWindow::buildUI() {
     setWindowTitle(Loc::t("settings.title"));
 
     m_tabs = new QTabWidget(this);
+    // Rounded top corners + comfortable padding on the tab buttons to match the
+    // native look (task 4). The selected tab reads as a continuous surface with
+    // the pane below; idle tabs are slightly recessed.
+    m_tabs->setStyleSheet(
+        "QTabWidget::pane {"
+        " border: 1px solid palette(mid); border-radius: 6px; top: -1px; }"
+        "QTabBar::tab {"
+        " padding: 6px 18px; margin-right: 4px;"
+        " border: 1px solid palette(mid); border-bottom: none;"
+        " border-top-left-radius: 7px; border-top-right-radius: 7px;"
+        " background: palette(window); color: palette(text); }"
+        "QTabBar::tab:selected {"
+        " background: palette(base); }"
+        "QTabBar::tab:!selected {"
+        " margin-top: 2px; background: palette(window); color: palette(mid); }"
+        "QTabBar::tab:hover:!selected { color: palette(text); }");
     m_tabs->addTab(buildGeneralTab(),  Loc::t("tab.general"));
     m_tabs->addTab(buildFeaturesTab(), Loc::t("tab.features"));
 
@@ -420,16 +481,20 @@ QWidget* SettingsWindow::buildGeneralTab() {
         auto* iconRow = new QWidget;
         auto* h = new QHBoxLayout(iconRow);
         h->setContentsMargins(0, 0, 0, 0);
-        h->setSpacing(4);   // small gaps so the icons read as a tidy segmented row
+        h->setSpacing(6);   // small gaps so the icons read as a tidy, uncramped row
 
-        // A subtle checked-state so the active segment is obvious but not the
-        // bright-blue default; auto-raise keeps the idle buttons borderless.
+        // Dark tint for the glyphs: the bundled assets are white-on-transparent
+        // (invisible on this light tab), so we recolor them to the text color.
+        // A faintly-blue selected highlight (NOT a full systemBlue fill) keeps the
+        // dark icon legible while still clearly marking the active segment.
+        const QColor iconTint = palette().color(QPalette::Active, QPalette::Text);
         static const char* kSegStyle =
-            "QToolButton { border: 1px solid transparent; border-radius: 5px; }"
-            "QToolButton:hover { background-color: palette(midlight); }"
+            "QToolButton { border: 1px solid transparent; border-radius: 6px;"
+            " background: transparent; }"
+            "QToolButton:hover { background-color: rgba(0,0,0,18); }"
             "QToolButton:checked {"
-            " background-color: palette(highlight);"
-            " border: 1px solid palette(highlight); }";
+            " background-color: rgba(0,122,255,40);"          // soft systemBlue wash
+            " border: 1px solid rgba(0,122,255,140); }";
 
         auto* group = new QButtonGroup(iconRow);
         group->setExclusive(true);
@@ -443,9 +508,11 @@ QWidget* SettingsWindow::buildGeneralTab() {
             auto* b = new QToolButton(iconRow);
             b->setCheckable(true);
             b->setAutoRaise(true);
-            b->setFixedSize(30, 26);
+            b->setFixedSize(32, 28);
             b->setIconSize(QSize(18, 18));
-            b->setIcon(barIconAsset(kBarIcons.at(i)));
+            // Tinted dark so the glyph is clearly visible on the light background.
+            b->setIcon(barIconAssetTinted(kBarIcons.at(i), iconTint, 18));
+            b->setToolTip(kBarIcons.at(i));
             b->setStyleSheet(kSegStyle);
             if (i == selectedSeg) b->setChecked(true);
             group->addButton(b, i);
@@ -462,13 +529,18 @@ QWidget* SettingsWindow::buildGeneralTab() {
         h->addWidget(sep);
         h->addSpacing(4);
 
-        // Custom image button (SF Symbol "photo").
+        // Custom image button (SF Symbol "photo"). Tinted dark like the presets
+        // so it is visible on the light background; reuses the segment style so
+        // the whole row reads consistently. If a custom image is active, mark it
+        // checked so the user sees which mode is selected.
         auto* custom = new QToolButton(iconRow);
+        custom->setCheckable(true);
         custom->setAutoRaise(true);
-        custom->setFixedSize(30, 26);
+        custom->setFixedSize(32, 28);
         custom->setIconSize(QSize(18, 18));
-        custom->setIcon(barIconAsset("photo"));
+        custom->setIcon(barIconAssetTinted("photo", iconTint, 18));
         custom->setStyleSheet(kSegStyle);
+        custom->setChecked(usingCustom);
         custom->setToolTip(Loc::t("settings.customIcon"));
         connect(custom, &QToolButton::clicked, this, &SettingsWindow::chooseCustomIcon);
         h->addWidget(custom);
@@ -693,6 +765,18 @@ void SettingsWindow::addAboutSection(QWidget* generalTab) {
     ch->addStretch(1);
 
     col->addWidget(copyRow);
+
+    // Version + edition line (small gray, centered) so this build is easy to tell
+    // apart from the native macOS one, e.g. "LightGet 1.0.0 · Cross-platform (Qt 6)".
+    // Uses the fixed product name "LightGet" (not the configurable APP_NAME) so
+    // the edition tag, not a duplicated "Qt", carries the distinction.
+    auto* version = grayText(
+        QStringLiteral("LightGet %1 · %2")
+            .arg(QString::fromUtf8(LIGHTGET_VERSION),
+                 QString::fromUtf8(LIGHTGET_EDITION)),
+        10);
+    version->setAlignment(Qt::AlignHCenter);
+    col->addWidget(version);
 }
 
 // ---------------------------------------------------------------------------
@@ -704,9 +788,13 @@ QPushButton* SettingsWindow::makeResetButton(ResetTarget target) {
     auto* b = new QPushButton;
     b->setFlat(true);
     b->setFixedSize(22, 22);
-    QIcon icon = barIconAsset("arrow.counterclockwise");
+    // Tinted to the secondary text color so the white-on-transparent asset is
+    // visible on the light tab (same root cause as the menu-bar-icon row, task 3).
+    const QColor resetTint = palette().color(QPalette::Active, QPalette::Mid);
+    QIcon icon = barIconAssetTinted("arrow.counterclockwise", resetTint, 14);
     if (icon.isNull()) icon = QIcon::fromTheme("edit-undo");
     b->setIcon(icon);
+    b->setIconSize(QSize(14, 14));
     if (icon.isNull()) b->setText(QStringLiteral("↺"));  // ↺ fallback glyph
     b->setToolTip(Loc::t("reset.tooltip"));
     connect(b, &QPushButton::clicked, this, [this, target]() { resetTapped(target); });

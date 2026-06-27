@@ -714,8 +714,14 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
     const QPointF p = e->position();
     m_dragStart = p;
 
-    // Click elsewhere commits any in-progress text editing.
-    if (m_textEditor) commitTextEditing();
+    // A press that REACHES the overlay while editing text commits that text and is
+    // CONSUMED — we do NOT also start a new text / selection in the same press.
+    // That double-action (commit + immediately spawn a new text) is exactly what
+    // looked like "clicking the align option closes the text and creates a new
+    // one": the align / ✓ / ✗ buttons are child widgets, so a real click on them
+    // never reaches here — only a genuine "click elsewhere" does, and that should
+    // simply finish the current text.
+    if (m_textEditor) { commitTextEditing(); update(); return; }
 
     if (m_selection) {
         const QRectF sel = *m_selection;
@@ -1219,6 +1225,7 @@ void OverlayWindow::showEditControls() {
     m_editControls = container;
     positionEditControls();
     container->show();
+    container->raise();   // keep the controls above the editor so clicks land on them
 }
 
 void OverlayWindow::positionEditControls() {
@@ -1294,6 +1301,7 @@ void OverlayWindow::showAlignmentControls() {
     updateAlignmentHighlight();
     positionAlignmentControls();
     container->show();
+    container->raise();   // above the editor so the align buttons get the clicks
 }
 
 void OverlayWindow::positionAlignmentControls() {
@@ -1434,8 +1442,12 @@ bool OverlayWindow::eventFilter(QObject* obj, QEvent* ev) {
                 return true;
             }
         } else if (ev->type() == QEvent::FocusOut) {
-            // Lost focus (click elsewhere) -> commit, unless we're mid-teardown.
-            if (!m_endingTextEditing) commitTextEditing();
+            // Intentionally do NOT auto-commit on focus-out. On macOS, clicking our
+            // own Qt::NoFocus controls (the align buttons / ✓ / ✗ / toolbar) can
+            // deliver a transient FocusOut to the editor; auto-committing here made
+            // the alignment buttons feel like they "closed" the text. Commit now
+            // happens only on explicit actions: a genuine click elsewhere on the
+            // overlay (mousePressEvent), Enter, or the ✓ button.
         }
     }
     return QWidget::eventFilter(obj, ev);
