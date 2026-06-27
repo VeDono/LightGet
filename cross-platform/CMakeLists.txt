@@ -90,6 +90,12 @@ target_link_libraries(LightGet PRIVATE
 # In-app settings scope = APP_NAME (so an alternate build keeps its own QSettings).
 target_compile_definitions(LightGet PRIVATE LIGHTGET_APP_NAME="${APP_NAME}")
 
+# M_PI and friends: POSIX <math.h> (Clang/GCC, i.e. macOS/Linux) define them, but
+# MSVC's <cmath> only exposes them when _USE_MATH_DEFINES is set BEFORE the include.
+# Toolbar.cpp / OverlayWindow.cpp use M_PI, so the Windows build fails without this.
+# Harmless on the other toolchains.
+target_compile_definitions(LightGet PRIVATE _USE_MATH_DEFINES)
+
 # Version + edition label, surfaced in the settings About/footer so the two
 # builds (this Qt port vs the native macOS app) are easy to tell apart.
 # NOTE: the edition string contains parentheses, which trip CMake's
@@ -108,6 +114,9 @@ target_compile_definitions(LightGet PRIVATE
 if(WIN32)
     # RegisterHotKey / WM_HOTKEY, BitBlt/DXGI capture, SetForegroundWindow.
     target_link_libraries(LightGet PRIVATE user32 gdi32)
+    # NOMINMAX: windows.h's min/max macros otherwise clash with std::min/max and
+    # Qt's numeric_limits use. WIN32_LEAN_AND_MEAN trims the windows.h surface.
+    target_compile_definitions(LightGet PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     # For DXGI Desktop Duplication (optional, faster capture):
     # target_link_libraries(LightGet PRIVATE dxgi d3d11)
 
