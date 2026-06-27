@@ -230,7 +230,13 @@ QSizeF OverlayWindow::textSize(const Annotation& a) const {
     QRectF r = fm.boundingRect(QRectF(0, 0, 1000, 1e7),
                                Qt::AlignLeft | Qt::TextWordWrap, s);
     const qreal w = std::max(std::ceil(r.width()), qreal(10));
-    const qreal h = std::max(std::ceil(r.height()), qreal(font.pointSizeF()));
+    // Height = line count x the render pitch (font height x 1.15, see
+    // drawTextAnnotation / applyAlignmentToEditor) so the selection box and
+    // handles hug the tightened multi-line text. The render is '\n'-split
+    // (NoWrap), so count newlines rather than using the word-wrapped height.
+    const int lineCount = static_cast<int>(s.count('\n')) + 1;
+    const qreal h = std::max(std::ceil(lineCount * fm.height() * 1.15),
+                             qreal(font.pointSizeF()));
     return QSizeF(w, h);
 }
 
@@ -605,7 +611,10 @@ void OverlayWindow::drawTextAnnotation(QPainter& p, const Annotation& a) {
     QFontMetricsF fm(font);
 
     const QStringList lines = a.text.split('\n');
-    const qreal lineHeight = fm.ascent() + fm.descent() + fm.leading();
+    // Compact, chat-like line pitch — matches the inline editor's FixedHeight
+    // (applyAlignmentToEditor) so committed text keeps the same spacing it had
+    // while typing. font height x 1.15 (small gap, no leading bloat).
+    const qreal lineHeight = fm.height() * 1.15;
     const QPointF c = textCenter(a);
 
     p.save();
@@ -1522,14 +1531,26 @@ void OverlayWindow::setTextAlignment(TextAlign a) {
 
 void OverlayWindow::applyAlignmentToEditor(TextAlign a) {
     if (!m_textEditor) return;
-    // Apply alignment to the entire document, preserving the cursor.
+    // Apply alignment to the whole document AND a tight, fixed line height with
+    // zero paragraph margins, so multi-line text uses a compact, chat-like line
+    // spacing instead of the loose default (the font's natural leading made the
+    // gap look too big while typing). New blocks (Enter) inherit this format.
+    // kTextLinePitch = font height x 1.15 (a small gap, never clips descenders).
     m_textEditor->setFocus(Qt::OtherFocusReason);
+    const qreal pitch = QFontMetricsF(m_textEditor->font()).height() * 1.15;
     QTextCursor tc = m_textEditor->textCursor();
     const int savedPos = tc.position();
-    tc.select(QTextCursor::Document);
-    QTextBlockFormat fmt;
-    fmt.setAlignment(toQtAlignment(a));
-    tc.mergeBlockFormat(fmt);
+    {
+        // Block signals so this format merge doesn't re-enter the textChanged path.
+        const QSignalBlocker blocker(m_textEditor);
+        tc.select(QTextCursor::Document);
+        QTextBlockFormat fmt;
+        fmt.setAlignment(toQtAlignment(a));
+        fmt.setTopMargin(0);
+        fmt.setBottomMargin(0);
+        fmt.setLineHeight(pitch, QTextBlockFormat::FixedHeight);
+        tc.mergeBlockFormat(fmt);
+    }
     QTextCursor restore = m_textEditor->textCursor();
     restore.setPosition(std::min<int>(savedPos, static_cast<int>(m_textEditor->toPlainText().length())));
     m_textEditor->setTextCursor(restore);
