@@ -119,6 +119,12 @@ if(WIN32)
     if(MSVC)
         target_link_options(LightGet PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
     endif()
+    # Embed the application icon into the .exe so the executable file itself
+    # (Explorer / taskbar / Alt-Tab) shows the LightGet logo. app.rc references
+    # AppIcon.ico (next to it in resources/); MSVC's rc.exe compiles .rc files
+    # automatically when they are listed as target sources.
+    target_sources(LightGet PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resources/app.rc)
+
     # RegisterHotKey / WM_HOTKEY, BitBlt/DXGI capture, SetForegroundWindow.
     target_link_libraries(LightGet PRIVATE user32 gdi32)
     # NOMINMAX: windows.h's min/max macros otherwise clash with std::min/max and

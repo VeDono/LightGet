@@ -83,7 +83,8 @@ private:
 //
 // Click -> "Press keys…"; next keyDown captures. Esc cancels (restores previous
 // display). At least ONE modifier required, else beep and keep recording.
-// Glyph order in display string: ⌃ ⌥ ⇧ ⌘ then uppercased key.
+// The captured display is platform-correct (mac glyphs ⌃⌥⇧⌘ vs. Windows/Linux
+// "Ctrl+Shift+<KEY>"); see Settings::hotKeyDisplayString.
 // Emits captured(carbonKeyCode, carbonModifiers, display).
 // ---------------------------------------------------------------------------
 class HotkeyRecorder : public QPushButton {
@@ -102,7 +103,8 @@ private:
     void startRecording();
     // Build a Carbon modifier mask from Qt::KeyboardModifiers.
     static uint32_t carbonModifiers(Qt::KeyboardModifiers mods);
-    // Build "⌃⌥⇧⌘<KEY>" display string.
+    // Build the platform-correct display string (glyphs on macOS, spelled-out
+    // "Ctrl+Shift+<KEY>" on Windows/Linux) via Settings::hotKeyDisplayString.
     static QString displayString(Qt::KeyboardModifiers mods, const QString& keyText);
     // Translate a Qt::Key (+ native VK fallback) to a Carbon virtual-key code,
     // so the persisted hotKeyCode matches the macOS defaults file (kVK_*).

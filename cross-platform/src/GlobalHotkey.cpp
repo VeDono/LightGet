@@ -12,7 +12,8 @@
 // its activated() signal.
 //
 // Backends (selected via #ifdef):
-//   - Windows : RegisterHotKey + WM_HOTKEY (QAbstractNativeEventFilter)
+//   - Windows : RegisterHotKey to a process-wide message-only window + WM_HOTKEY
+//               handled by that window's WNDPROC
 //   - Linux/X11 : XGrabKey on the root window + filter XCB_KEY_PRESS
 //                 (every NumLock/CapsLock lock-mask variant is grabbed)
 //   - macOS : Carbon RegisterEventHotKey + kEventHotKeyPressed (pass-through)
@@ -42,8 +43,6 @@ constexpr uint32_t kSignature = 0x534E4150;
 // ===========================================================================
 #if defined(Q_OS_WIN)
 
-#include <QAbstractNativeEventFilter>
-#include <QCoreApplication>
 #include <windows.h>
 
 namespace {
@@ -96,61 +95,78 @@ UINT carbonModsToWin(uint32_t mods) {
 
 } // namespace
 
-// Shared filter: routes WM_HOTKEY (wParam == our id) to the owning instance.
-class HotkeyNativeFilter : public QAbstractNativeEventFilter {
-public:
-    static HotkeyNativeFilter& instance() {
-        static HotkeyNativeFilter f;
-        static bool installed = false;
-        if (!installed) {
-            qApp->installNativeEventFilter(&f);
-            installed = true;
-        }
-        return f;
-    }
+// Process-wide registry: RegisterHotKey id (== WM_HOTKEY wParam) -> instance.
+namespace {
+QHash<int, GlobalHotkey*>& winRegistry() {
+    static QHash<int, GlobalHotkey*> reg;
+    return reg;
+}
+} // namespace
 
-    QHash<int, GlobalHotkey*> byId; // RegisterHotKey id -> instance
-
-    bool nativeEventFilter(const QByteArray& type, void* message,
-                           qintptr* /*result*/) override {
-        if (type != "windows_generic_MSG" && type != "windows_dispatcher_MSG")
-            return false;
-        MSG* msg = static_cast<MSG*>(message);
-        if (msg->message == WM_HOTKEY) {
-            auto it = byId.find(static_cast<int>(msg->wParam));
-            if (it != byId.end() && it.value())
-                it.value()->emitActivated();
-        }
-        return false;
-    }
-};
-
-struct GlobalHotkey::Impl {
-    int id = 0;              // RegisterHotKey id (== WM_HOTKEY wParam)
-    bool active = false;
-    HotkeyNativeFilter* filter = nullptr; // stored at construction; reused on teardown
-};
+// Routes WM_HOTKEY (wParam == our id) to the owning instance.
+static GlobalHotkey* winLookupHotkey(int id) {
+    auto& reg = winRegistry();
+    auto it = reg.find(id);
+    return (it != reg.end()) ? it.value() : nullptr;
+}
 
 namespace {
+
+// WNDPROC for the message-only window: dispatch WM_HOTKEY to the owner.
+LRESULT CALLBACK hotkeyWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_HOTKEY) {
+        if (GlobalHotkey* owner = winLookupHotkey(static_cast<int>(wParam)))
+            owner->emitActivated();
+        return 0;
+    }
+    return ::DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+// One process-wide hidden message-only window. Created lazily, lives for the
+// process. RegisterHotKey targets THIS hwnd, so WM_HOTKEY is always delivered
+// here (thread-targeted, hwnd==NULL hotkeys are not reliably routed to Qt's
+// native event filter — hence this dedicated window + WNDPROC).
+HWND hotkeyMessageWindow() {
+    static HWND s_hwnd = nullptr;
+    if (s_hwnd) return s_hwnd;
+
+    static const wchar_t* kClassName = L"SnapEditHotkeyMsgWindow";
+    HINSTANCE hinst = ::GetModuleHandleW(nullptr);
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = hotkeyWndProc;
+    wc.hInstance = hinst;
+    wc.lpszClassName = kClassName;
+    // Register once; ignore "class already exists" so re-entry is harmless.
+    ::RegisterClassExW(&wc);
+
+    s_hwnd = ::CreateWindowExW(0, kClassName, L"SnapEditHotkey", 0, 0, 0, 0, 0,
+                               HWND_MESSAGE, nullptr, hinst, nullptr);
+    return s_hwnd;
+}
+
 int nextWinHotkeyId() {
     // RegisterHotKey ids for an app must be in 0x0000..0xBFFF.
     static int counter = 0;
     return (counter++ % 0xB000);
 }
+
 } // namespace
+
+struct GlobalHotkey::Impl {
+    int id = 0;       // RegisterHotKey id (== WM_HOTKEY wParam)
+    bool active = false;
+};
 
 GlobalHotkey::GlobalHotkey(QObject* parent) : QObject(parent) {
     d = new Impl();
     d->id = nextWinHotkeyId();
-    // Create/install the shared filter once and cache the pointer, so teardown
-    // never re-creates the function-local static during static destruction.
-    d->filter = &HotkeyNativeFilter::instance();
 }
 
 GlobalHotkey::~GlobalHotkey() {
     unregisterHotkey();
-    if (d && d->filter)
-        d->filter->byId.remove(d->id);
+    winRegistry().remove(d->id);
     delete d;
 }
 
@@ -161,9 +177,12 @@ bool GlobalHotkey::registerHotkey(uint32_t carbonKeyCode, uint32_t carbonModifie
     if (vk == 0) { m_registered = false; return false; }
     UINT mods = carbonModsToWin(carbonModifiers);
 
-    if (d->filter) d->filter->byId.insert(d->id, this);
-    if (!::RegisterHotKey(nullptr, d->id, mods, vk)) {
-        if (d->filter) d->filter->byId.remove(d->id);
+    HWND hwnd = hotkeyMessageWindow();
+    if (!hwnd) { m_registered = false; return false; }
+
+    winRegistry().insert(d->id, this);
+    if (!::RegisterHotKey(hwnd, d->id, mods, vk)) {
+        winRegistry().remove(d->id);
         m_registered = false;
         return false;
     }
@@ -178,12 +197,10 @@ bool GlobalHotkey::reregister(uint32_t carbonKeyCode, uint32_t carbonModifiers) 
 
 void GlobalHotkey::unregisterHotkey() {
     if (d && d->active) {
-        ::UnregisterHotKey(nullptr, d->id);
+        ::UnregisterHotKey(hotkeyMessageWindow(), d->id);
         d->active = false;
     }
-    // Use the stored filter pointer (never re-create the static during teardown).
-    if (d && d->filter)
-        d->filter->byId.remove(d->id);
+    if (d) winRegistry().remove(d->id);
     m_registered = false;
 }
 

@@ -7,6 +7,7 @@
 -->
 <RCC version="1.0">
   <qresource>
+    <file alias="appicon.png">appicon.png</file>
     <file alias="assets/cursorarrow.png">assets/cursorarrow.png</file>
     <file alias="assets/arrow.up.right.png">assets/arrow.up.right.png</file>
     <file alias="assets/line.diagonal.png">assets/line.diagonal.png</file>

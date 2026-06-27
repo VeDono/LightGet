@@ -14,6 +14,7 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QIcon>
 #include <QLocale>
 
 // Settings scope (overridable at build time so an alternate/parallel install
@@ -40,6 +41,13 @@ int main(int argc, char** argv) {
     QLocale::setDefault(QLocale(lang));
 
     QApplication app(argc, argv);
+
+    // Application icon (bundled in the binary via the assets .qrc). Used for the
+    // settings window title-bar / taskbar entry on Windows & Linux and as the
+    // tray-icon fallback. On Windows this is what removes the blank/default
+    // window & taskbar icon; the .exe file icon is handled separately via the
+    // embedded Win32 resource (resources/app.rc -> AppIcon.ico).
+    app.setWindowIcon(QIcon(QStringLiteral(":/appicon.png")));
 
     // Tray-only app: never quit just because a transient window closed.
     QApplication::setQuitOnLastWindowClosed(false);

@@ -284,14 +284,12 @@ uint32_t HotkeyRecorder::carbonModifiers(Qt::KeyboardModifiers mods) {
 
 QString HotkeyRecorder::displayString(Qt::KeyboardModifiers mods,
                                       const QString& keyText) {
-    // Glyph order: ⌃ ⌥ ⇧ ⌘ then the uppercased key.
-    QString s;
-    if (mods & Qt::MetaModifier)    s += QStringLiteral("⌃"); // ⌃ control
-    if (mods & Qt::AltModifier)     s += QStringLiteral("⌥"); // ⌥ option
-    if (mods & Qt::ShiftModifier)   s += QStringLiteral("⇧"); // ⇧ shift
-    if (mods & Qt::ControlModifier) s += QStringLiteral("⌘"); // ⌘ command
-    s += keyText.isEmpty() ? QStringLiteral("?") : keyText;
-    return s;
+    // Delegate to the shared, platform-aware formatter so the recorder, the reset
+    // action, and the default all render identically. Convert Qt modifiers to the
+    // Carbon mask first (the same mask that is persisted/registered): on macOS the
+    // result is glyphs (⌃⌥⇧⌘), on Windows/Linux spelled-out names (Ctrl/Alt/Shift)
+    // joined with "+", matching the actually-registered keys.
+    return Settings::hotKeyDisplayString(carbonModifiers(mods), keyText);
 }
 
 // Translate a Qt key (+ native VK fallback) to a Carbon virtual-key code so the
@@ -483,11 +481,14 @@ QWidget* SettingsWindow::buildGeneralTab() {
         h->setContentsMargins(0, 0, 0, 0);
         h->setSpacing(6);   // small gaps so the icons read as a tidy, uncramped row
 
-        // Dark tint for the glyphs: the bundled assets are white-on-transparent
-        // (invisible on this light tab), so we recolor them to the text color.
-        // A faintly-blue selected highlight (NOT a full systemBlue fill) keeps the
-        // dark icon legible while still clearly marking the active segment.
-        const QColor iconTint = palette().color(QPalette::Active, QPalette::Text);
+        // Theme-adaptive tint for the glyphs: the bundled assets are
+        // white-on-transparent (invisible by default), so we recolor them to the
+        // window's TEXT color. This is dark on light themes and light on dark
+        // themes automatically (fixes the icons rendering black/invisible on
+        // Windows dark theme). A faintly-blue selected highlight (NOT a full
+        // systemBlue fill) keeps the icon legible on both themes while still
+        // clearly marking the active segment.
+        const QColor iconTint = palette().color(QPalette::WindowText);
         static const char* kSegStyle =
             "QToolButton { border: 1px solid transparent; border-radius: 6px;"
             " background: transparent; }"
@@ -510,7 +511,8 @@ QWidget* SettingsWindow::buildGeneralTab() {
             b->setAutoRaise(true);
             b->setFixedSize(32, 28);
             b->setIconSize(QSize(18, 18));
-            // Tinted dark so the glyph is clearly visible on the light background.
+            // Tinted to the palette text color so the glyph is visible on both
+            // light and dark themes.
             b->setIcon(barIconAssetTinted(kBarIcons.at(i), iconTint, 18));
             b->setToolTip(kBarIcons.at(i));
             b->setStyleSheet(kSegStyle);
@@ -529,8 +531,9 @@ QWidget* SettingsWindow::buildGeneralTab() {
         h->addWidget(sep);
         h->addSpacing(4);
 
-        // Custom image button (SF Symbol "photo"). Tinted dark like the presets
-        // so it is visible on the light background; reuses the segment style so
+        // Custom image button (SF Symbol "photo"). Tinted to the palette text
+        // color like the presets so it is visible on light and dark themes;
+        // reuses the segment style so
         // the whole row reads consistently. If a custom image is active, mark it
         // checked so the user sees which mode is selected.
         auto* custom = new QToolButton(iconRow);
@@ -788,9 +791,12 @@ QPushButton* SettingsWindow::makeResetButton(ResetTarget target) {
     auto* b = new QPushButton;
     b->setFlat(true);
     b->setFixedSize(22, 22);
-    // Tinted to the secondary text color so the white-on-transparent asset is
-    // visible on the light tab (same root cause as the menu-bar-icon row, task 3).
-    const QColor resetTint = palette().color(QPalette::Active, QPalette::Mid);
+    // Tinted to the theme-adaptive button-text color so the white-on-transparent
+    // asset stays visible on both light and dark themes (same root cause as the
+    // menu-bar-icon row). ButtonText follows the system theme: dark on light,
+    // light on dark — unlike QPalette::Mid, which is background-derived and
+    // rendered the glyph dark/invisible on Windows dark theme.
+    const QColor resetTint = palette().color(QPalette::ButtonText);
     QIcon icon = barIconAssetTinted("arrow.counterclockwise", resetTint, 14);
     if (icon.isNull()) icon = QIcon::fromTheme("edit-undo");
     b->setIcon(icon);
@@ -822,7 +828,9 @@ void SettingsWindow::resetTapped(ResetTarget target) {
     case ResetTarget::Hotkey:
         s.setHotKeyCode(CarbonKeys::kVK_ANSI_2);
         s.setHotKeyModifiers(CarbonKeys::cmdKey | CarbonKeys::shiftKey);
-        s.setHotKeyDisplay(QStringLiteral("⇧⌘2"));   // ⇧⌘2
+        // Platform-correct default display: "⇧⌘2" on macOS, "Ctrl+Shift+2" else.
+        s.setHotKeyDisplay(Settings::hotKeyDisplayString(
+            CarbonKeys::cmdKey | CarbonKeys::shiftKey, QStringLiteral("2")));
         emit hotKeyChanged();
         break;
     case ResetTarget::Dim:

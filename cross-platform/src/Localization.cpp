@@ -11,7 +11,22 @@
 #include "Localization.h"
 #include "Settings.h"
 
+#include <QtGlobal>
+
 namespace Loc {
+
+// Platform-correct modifier list shown in the "Tip:" hint, so the example keys
+// match what the user actually presses (the Swift source hardcoded mac glyphs).
+//   - Windows: Ctrl / Alt / Shift / Win
+//   - Linux:   Ctrl / Alt / Shift / Super
+//   - macOS:   ⌘ / ⌥ / ⌃ / ⇧
+#if defined(Q_OS_MACOS)
+#  define LG_MODIFIER_HINT "⌘ / ⌥ / ⌃ / ⇧"
+#elif defined(Q_OS_WIN)
+#  define LG_MODIFIER_HINT "Ctrl / Alt / Shift / Win"
+#else
+#  define LG_MODIFIER_HINT "Ctrl / Alt / Shift / Super"
+#endif
 
 const QHash<QString, QHash<QString, QString>>& table() {
     static const QHash<QString, QHash<QString, QString>> t = {
@@ -66,9 +81,9 @@ const QHash<QString, QHash<QString, QString>>& table() {
           {QStringLiteral("ru"), QStringLiteral("Уменьшать до обычного размера (1×)")},
           {QStringLiteral("uk"), QStringLiteral("Зменшувати до звичайного розміру (1×)")}}},
         {QStringLiteral("settings.hint"),
-         {{QStringLiteral("en"), QStringLiteral("Tip: set a key together with a modifier (⌘ / ⌥ / ⌃ / ⇧).")},
-          {QStringLiteral("ru"), QStringLiteral("Совет: задайте клавишу вместе с модификатором (⌘ / ⌥ / ⌃ / ⇧).")},
-          {QStringLiteral("uk"), QStringLiteral("Порада: задайте клавішу разом із модифікатором (⌘ / ⌥ / ⌃ / ⇧).")}}},
+         {{QStringLiteral("en"), QStringLiteral("Tip: set a key together with a modifier (" LG_MODIFIER_HINT ").")},
+          {QStringLiteral("ru"), QStringLiteral("Совет: задайте клавишу вместе с модификатором (" LG_MODIFIER_HINT ").")},
+          {QStringLiteral("uk"), QStringLiteral("Порада: задайте клавішу разом із модифікатором (" LG_MODIFIER_HINT ").")}}},
         {QStringLiteral("settings.saveFolder"),
          {{QStringLiteral("en"), QStringLiteral("Save folder:")},
           {QStringLiteral("ru"), QStringLiteral("Папка сохранения:")},
@@ -221,6 +236,8 @@ const QHash<QString, QHash<QString, QString>>& table() {
     };
     return t;
 }
+
+#undef LG_MODIFIER_HINT
 
 QString t(const QString& key) {
     const QString lang = Settings::instance().language();

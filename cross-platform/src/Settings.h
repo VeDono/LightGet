@@ -40,8 +40,19 @@ public:
     void setHotKeyCode(uint32_t v);
     uint32_t hotKeyModifiers() const;        // default cmdKey|shiftKey (768)
     void setHotKeyModifiers(uint32_t v);
-    QString hotKeyDisplay() const;           // default "⇧⌘2"
+    // Default display is platform-correct: "Ctrl+Shift+2" (Win/Linux) / "⇧⌘2" (mac).
+    QString hotKeyDisplay() const;
     void setHotKeyDisplay(const QString& v);
+
+    // Format a human-readable shortcut string from a Carbon modifier mask + key
+    // text, rendered per-platform so users see the keys they actually press:
+    //   - Windows: Ctrl / Alt / Shift / Win  (cmdKey & controlKey both -> Ctrl)
+    //   - Linux:   Ctrl / Alt / Shift / Super
+    //   - macOS:   ⌃ ⌥ ⇧ ⌘  glyphs
+    // The underlying registered combo (Carbon code/mods) is unchanged; this is
+    // display only. Shared by the recorder, the reset action, and the default.
+    static QString hotKeyDisplayString(uint32_t carbonModifiers,
+                                       const QString& keyText);
 
     // --- Capture / output ---
     double dimOpacity() const;               // default 0.45 (slider 0.10..0.85)

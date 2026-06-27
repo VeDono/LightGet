@@ -8,6 +8,8 @@
 
 #include "Settings.h"
 
+#include <QStringList>
+
 namespace {
 // Persisted key names — must match the macOS app verbatim for migration parity.
 constexpr char kKeyCode[]       = "hotKeyCode";
@@ -54,11 +56,48 @@ void Settings::setHotKeyModifiers(uint32_t v) {
 }
 
 QString Settings::hotKeyDisplay() const {
-    return m_s.value(kDisplay, QStringLiteral("⇧⌘2")).toString(); // ⇧⌘2
+    // Default (no stored value, e.g. fresh install) renders the canonical default
+    // combo cmdKey|shiftKey + "2" in platform-correct form: "Ctrl+Shift+2" on
+    // Windows/Linux, "⇧⌘2" on macOS. A previously recorded value is shown as-is.
+    const QString def =
+        hotKeyDisplayString(CarbonKeys::cmdKey | CarbonKeys::shiftKey,
+                            QStringLiteral("2"));
+    return m_s.value(kDisplay, def).toString();
 }
 
 void Settings::setHotKeyDisplay(const QString& v) {
     m_s.setValue(kDisplay, v);
+}
+
+QString Settings::hotKeyDisplayString(uint32_t carbonModifiers,
+                                      const QString& keyText) {
+    using namespace CarbonKeys;
+    const QString key = keyText.isEmpty() ? QStringLiteral("?") : keyText;
+
+#if defined(Q_OS_MACOS)
+    // macOS keeps the native glyph form with no separators. Glyph order: ⌃ ⌥ ⇧ ⌘.
+    QString s;
+    if (carbonModifiers & controlKey) s += QStringLiteral("⌃"); // ⌃ control
+    if (carbonModifiers & optionKey)  s += QStringLiteral("⌥"); // ⌥ option
+    if (carbonModifiers & shiftKey)   s += QStringLiteral("⇧"); // ⇧ shift
+    if (carbonModifiers & cmdKey)     s += QStringLiteral("⌘"); // ⌘ command
+    s += key;
+    return s;
+#else
+    // Windows / Linux: spell out modifier names joined with "+", matching the
+    // combo that is ACTUALLY registered. The GlobalHotkey backends fold BOTH
+    // Carbon cmdKey and controlKey onto the platform Ctrl (MOD_CONTROL on
+    // Windows, ControlMask on X11), so both render as "Ctrl" here — that is why
+    // the persisted "⇧⌘2" default reads as "Ctrl+Shift+2" on these platforms.
+    // ("Win"/"Super" is reserved for a true Meta bit, which the recorder maps to
+    // controlKey and is therefore not emitted today; kept for completeness.)
+    QStringList parts;
+    if (carbonModifiers & (cmdKey | controlKey)) parts << QStringLiteral("Ctrl");
+    if (carbonModifiers & optionKey)             parts << QStringLiteral("Alt");
+    if (carbonModifiers & shiftKey)              parts << QStringLiteral("Shift");
+    parts << key;
+    return parts.join(QLatin1Char('+'));
+#endif
 }
 
 // --- Capture / output ---
