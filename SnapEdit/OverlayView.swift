@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import QuartzCore
 
 // Сердце приложения. Один вью на весь экран, в котором происходит ВСЁ:
 // затемнение, выделение области, изменение её размера, рисование стрелок,
@@ -24,6 +25,11 @@ final class OverlayView: NSView {
     private let lineWidth: CGFloat = 3
 
     private var toolbar: ToolbarView?
+
+    // Прогресс затемнения [0…1] для опционального плавного появления/исчезновения.
+    // 1.0 = полное затемнение (по умолчанию, мгновенное поведение без анимации).
+    private var dimProgress: CGFloat = 1.0
+    private var dimTimer: Timer?
 
     // MARK: - Состояние перетаскивания
 
@@ -199,7 +205,7 @@ final class OverlayView: NSView {
     // Затемняем весь экран, кроме выделенной области (правило even-odd «вырезает дырку»).
     private func drawDim(in ctx: CGContext) {
         ctx.saveGState()
-        ctx.setFillColor(NSColor.black.withAlphaComponent(CGFloat(Settings.dimOpacity)).cgColor)
+        ctx.setFillColor(NSColor.black.withAlphaComponent(CGFloat(Settings.dimOpacity) * dimProgress).cgColor)
         ctx.addRect(bounds)
         if let sel = selection { ctx.addRect(sel) }
         ctx.fillPath(using: .evenOdd)
@@ -1225,6 +1231,48 @@ final class OverlayView: NSView {
 
     private func finish() {
         onFinish?()
+    }
+
+    // MARK: - Плавное затемнение (опционально)
+
+    // Плавно проявляем затемнение при старте захвата: 0 → 1 за ~0.18 с (ease-out).
+    func startDimFadeIn() {
+        dimProgress = 0
+        needsDisplay = true
+        animateDim(to: 1, duration: 0.18, completion: nil)
+    }
+
+    // Плавно убираем затемнение перед закрытием overlay: текущее → 0 за ~0.16 с (ease-out),
+    // затем вызываем completion. Если анимация прервётся, completion всё равно сработает.
+    func startDimFadeOut(completion: @escaping () -> Void) {
+        animateDim(to: 0, duration: 0.16, completion: completion)
+    }
+
+    // Универсальный шаг анимации dimProgress по таймеру с ease-out кривой.
+    // Простое и надёжное решение: один Timer на вью, гарантированный вызов completion.
+    private func animateDim(to target: CGFloat, duration: TimeInterval,
+                            completion: (() -> Void)?) {
+        dimTimer?.invalidate()
+        let start = dimProgress
+        let startTime = CACurrentMediaTime()
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); completion?(); return }
+            let elapsed = CACurrentMediaTime() - startTime
+            let p = duration > 0 ? min(1, elapsed / duration) : 1
+            let eased = 1 - pow(1 - CGFloat(p), 3)   // ease-out (cubic)
+            self.dimProgress = start + (target - start) * eased
+            self.needsDisplay = true
+            if p >= 1 {
+                t.invalidate()
+                if self.dimTimer === t { self.dimTimer = nil }
+                self.dimProgress = target
+                self.needsDisplay = true
+                completion?()
+            }
+        }
+        dimTimer = timer
+        // .common — чтобы анимация шла и во время трекинга мыши/модальных циклов.
+        RunLoop.main.add(timer, forMode: .common)
     }
 }
 

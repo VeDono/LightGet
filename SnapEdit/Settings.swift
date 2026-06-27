@@ -66,6 +66,13 @@ enum Settings {
         set { d.set(newValue, forKey: "textBg") }
     }
 
+    // Плавное появление/исчезновение затемнения. По умолчанию выключено
+    // (затемнение появляется/исчезает мгновенно — как прежде).
+    static var animatedDim: Bool {
+        get { d.bool(forKey: "animatedDim") }   // по умолчанию false
+        set { d.set(newValue, forKey: "animatedDim") }
+    }
+
     // "en" / "ru" / "uk". По умолчанию — английский (для новых пользователей).
     static var language: String {
         get { d.string(forKey: Key.language) ?? "en" }

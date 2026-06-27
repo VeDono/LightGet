@@ -260,6 +260,9 @@ final class SettingsWindowController: NSWindowController {
         check(Loc.t("features.showColors"), Settings.showColorPalette) { on in
             Settings.showColorPalette = on
         }
+        check(Loc.t("settings.animatedDim"), Settings.animatedDim) { on in
+            Settings.animatedDim = on
+        }
 
         y -= 10
         header(Loc.t("features.textTitle"))

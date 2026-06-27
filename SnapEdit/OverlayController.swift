@@ -70,6 +70,11 @@ final class OverlayController {
         forceCursorVisible()
         // Подстраховка от гонки с WindowServer/игрой: повторяем на следующем тике.
         DispatchQueue.main.async { [weak self] in self?.forceCursorVisible() }
+
+        // Опционально — плавное появление затемнения на всех экранах.
+        if Settings.animatedDim {
+            for v in views { v.startDimFadeIn() }
+        }
     }
 
     private func clearOthers(except active: OverlayView?) {
@@ -86,7 +91,28 @@ final class OverlayController {
         }
     }
 
+    private var isClosing = false   // защита от повторного закрытия во время fade-out
+
     func close() {
+        guard !isClosing else { return }
+        isClosing = true
+
+        // Опционально — плавно гасим затемнение, потом убираем окна.
+        // Копирование/сохранение уже выполнены до вызова close() (через finish()),
+        // поэтому здесь остаётся только визуальное закрытие.
+        if Settings.animatedDim, !views.isEmpty {
+            for v in views { v.startDimFadeOut(completion: {}) }
+            // Убираем окна и завершаем ПОСЛЕ затухания. asyncAfter гарантирует, что
+            // приложение не зависнет, даже если кадры анимации почему-то не дойдут.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+                self?.tearDown()
+            }
+        } else {
+            tearDown()
+        }
+    }
+
+    private func tearDown() {
         for w in windows { w.orderOut(nil) }
         windows.removeAll()
         views.removeAll()
