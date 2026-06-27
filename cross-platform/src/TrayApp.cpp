@@ -27,12 +27,96 @@
 #include <QImage>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QPushButton>
 #include <QScreen>
 #include <QSystemTrayIcon>
 #include <QTimer>
 #include <QUrl>
+#include <cmath>
+
+namespace {
+
+// Small monochrome menu-item glyphs painted with QPainter into ~16px template
+// pixmaps. macOS has no freedesktop icon theme, so QIcon::fromTheme(...) returns
+// null and the menu items show no icon; these give "Take Screenshot" / "Settings"
+// / "Quit" a consistent subtle glyph. setIsMask(true) marks them as templates so
+// the menu tints them to the native appearance-adaptive gray.
+enum class MenuGlyph { Camera, Gear, Power };
+
+QIcon makeMenuGlyph(MenuGlyph kind) {
+    const qreal dpr = 2.0;
+    const int side = 16;
+    QPixmap pm(int(side * dpr), int(side * dpr));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    // Paint in black; setIsMask reinterprets alpha as the template shape so the
+    // tint color is supplied by the menu, not by us.
+    QColor ink(Qt::black);
+    QPen pen(ink);
+    pen.setWidthF(1.4);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+
+    const qreal s = side;            // logical drawing size (dpr handled by pm)
+    auto px = [s](qreal f) { return f * s; };
+
+    switch (kind) {
+    case MenuGlyph::Camera: {
+        // Rounded camera body + a small "bump" for the viewfinder + a lens ring.
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        const QRectF body(px(0.12), px(0.30), px(0.76), px(0.52));
+        p.drawRoundedRect(body, px(0.10), px(0.10));
+        QPainterPath bump;
+        bump.moveTo(px(0.36), px(0.30));
+        bump.lineTo(px(0.42), px(0.20));
+        bump.lineTo(px(0.58), px(0.20));
+        bump.lineTo(px(0.64), px(0.30));
+        p.drawPath(bump);
+        p.drawEllipse(QPointF(px(0.50), px(0.56)), px(0.15), px(0.15));
+        break;
+    }
+    case MenuGlyph::Gear: {
+        // Toothed ring (8 spokes) + a hub hole — a simple settings gear.
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        const QPointF c(px(0.50), px(0.50));
+        const qreal rOuter = px(0.34), rInner = px(0.22), rHub = px(0.12);
+        for (int i = 0; i < 8; ++i) {
+            const qreal a = i * (M_PI / 4.0);
+            p.drawLine(QPointF(c.x() + rInner * std::cos(a), c.y() + rInner * std::sin(a)),
+                       QPointF(c.x() + rOuter * std::cos(a), c.y() + rOuter * std::sin(a)));
+        }
+        p.drawEllipse(c, rInner, rInner);
+        p.drawEllipse(c, rHub, rHub);
+        break;
+    }
+    case MenuGlyph::Power: {
+        // Power symbol: a ~300° ring open at the top + a vertical stem.
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        const QRectF ring(px(0.24), px(0.28), px(0.52), px(0.52));
+        // Start near the top gap, sweep clockwise around (Qt angles: 16ths deg,
+        // CCW positive). Open ~60° at the top.
+        p.drawArc(ring, int((90 + 30) * 16), int(-300 * 16));
+        p.drawLine(QPointF(px(0.50), px(0.18)), QPointF(px(0.50), px(0.50)));
+        break;
+    }
+    }
+    p.end();
+
+    QIcon icon(pm);
+    icon.setIsMask(true);
+    return icon;
+}
+
+} // namespace
 
 // ===========================================================================
 // Construction / lifecycle
@@ -42,7 +126,14 @@ TrayApp::TrayApp(QObject* parent) : QObject(parent) {}
 
 TrayApp::~TrayApp() {
     // Tear down any live overlays first so their destructors don't outlive us.
-    closeOverlays();
+    // Bypass the animated-dim deferral guard: on shutdown there is no time for a
+    // fade, so delete the overlays synchronously regardless of m_closing.
+    m_closing = false;
+    for (OverlayWindow* w : m_overlays) {
+        w->hide();
+        w->deleteLater();
+    }
+    m_overlays.clear();
     delete m_settings;
     delete m_menu;     // owns its QActions
     delete m_tray;
@@ -89,7 +180,12 @@ void TrayApp::applyBarIcon() {
         if (!img.isNull()) {
             // Match the menu bar by scaling to 18x18 (as the Swift code did).
             img = img.scaled(18, 18, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-            m_tray->setIcon(QIcon(QPixmap::fromImage(img)));
+            QIcon icon(QPixmap::fromImage(img));
+            // Treat as a macOS template so the system tints it to the menu-bar
+            // appearance (gray / light depending on theme) instead of leaving a
+            // flat black bitmap. Harmless no-op off macOS.
+            icon.setIsMask(true);
+            m_tray->setIcon(icon);
             return;
         }
     }
@@ -103,6 +199,10 @@ void TrayApp::applyBarIcon() {
         QIcon bundled(res);
         if (!bundled.isNull()) icon = bundled;
     }
+    // Mark the bar icon as a template (mask) so macOS treats it as a menu-bar
+    // template image: it adapts to light/dark menu bars and renders the correct
+    // appearance-adaptive gray instead of pure black. No-op on other platforms.
+    icon.setIsMask(true);
     m_tray->setIcon(icon);
 }
 
@@ -115,19 +215,21 @@ QMenu* TrayApp::buildMenu() {
     m_captureAction = menu->addAction(
         QStringLiteral("%1  (%2)").arg(Loc::t(QStringLiteral("menu.capture")),
                                        Settings::instance().hotKeyDisplay()));
-    m_captureAction->setIcon(QIcon::fromTheme(QStringLiteral("camera-photo")));
+    // QIcon::fromTheme(...) returns null on macOS (no freedesktop theme), so paint
+    // small template glyphs instead — gives each item a subtle native-style icon.
+    m_captureAction->setIcon(makeMenuGlyph(MenuGlyph::Camera));
     connect(m_captureAction, &QAction::triggered, this, &TrayApp::startCapture);
 
     // Settings — keyEquivalent deliberately omitted (would only work with the
     // menu open, never globally), same reasoning as the source.
     QAction* settings = menu->addAction(Loc::t(QStringLiteral("menu.settings")));
-    settings->setIcon(QIcon::fromTheme(QStringLiteral("preferences-system")));
+    settings->setIcon(makeMenuGlyph(MenuGlyph::Gear));
     connect(settings, &QAction::triggered, this, &TrayApp::openSettings);
 
     menu->addSeparator();
 
     QAction* quit = menu->addAction(Loc::t(QStringLiteral("menu.quit")));
-    quit->setIcon(QIcon::fromTheme(QStringLiteral("application-exit")));
+    quit->setIcon(makeMenuGlyph(MenuGlyph::Power));
     connect(quit, &QAction::triggered, qApp, &QApplication::quit);
 
     return menu;
@@ -204,10 +306,13 @@ void TrayApp::startCapture() {
     }
 
     // Show + raise all overlays, then apply the native shield level once mapped.
+    const bool animateDim = Settings::instance().animatedDim();
     for (OverlayWindow* w : m_overlays) {
         w->show();
         w->raise();
         w->applyShieldLevel();
+        // Optional smooth fade-in of the dim layer (default OFF -> instant dim).
+        if (animateDim) w->startDimFadeIn();
     }
 
     // Keyboard focus goes to the overlay under the cursor (Esc / ⌘C etc.).
@@ -267,20 +372,41 @@ void TrayApp::presentCaptureError() {
 // ===========================================================================
 
 void TrayApp::closeOverlays() {
-    // Already idle (e.g. a second finished() arriving) -> nothing to do.
+    // Already idle (e.g. a second finished() arriving) -> nothing to do. The
+    // m_closing guard also swallows extra finished() signals that arrive while a
+    // deferred animated-dim teardown is already scheduled.
+    if (m_closing) return;
     if (m_overlays.isEmpty() && !m_overlayShown && !m_isCapturing) return;
 
-    for (OverlayWindow* w : m_overlays) {
-        w->hide();
-        w->deleteLater();
+    // The actual teardown: hide + delete every overlay, restore focus, go IDLE.
+    // The copy/save actions have already completed before finished() fired, so
+    // nothing here is reordered relative to the capture result.
+    auto teardown = [this]() {
+        for (OverlayWindow* w : m_overlays) {
+            w->hide();
+            w->deleteLater();
+        }
+        m_overlays.clear();
+
+        // Return focus to the previously-frontmost app (it re-hides its own
+        // cursor in its focus handler, mirroring the game case).
+        restorePreviousApp();
+
+        m_closing = false;
+        onCaptureFinished();
+    };
+
+    if (Settings::instance().animatedDim() && !m_overlays.isEmpty()) {
+        // Animated path: fade the dim out on every overlay, then tear down after
+        // the fade. m_closing blocks any further closeOverlays() until done.
+        m_closing = true;
+        for (OverlayWindow* w : m_overlays) w->startDimFadeOut();
+        QTimer::singleShot(180, this, [teardown]() { teardown(); });
+        return;
     }
-    m_overlays.clear();
 
-    // Return focus to the previously-frontmost app (it re-hides its own cursor
-    // in its focus handler, mirroring the game case).
-    restorePreviousApp();
-
-    onCaptureFinished();
+    // Default (animatedDim off): instant teardown, byte-identical to before.
+    teardown();
 }
 
 void TrayApp::clearOthers(OverlayWindow* except) {

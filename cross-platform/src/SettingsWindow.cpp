@@ -145,13 +145,40 @@ private:
 // HotkeyRecorder
 // ===========================================================================
 
+// Idle: a plain white rounded field with a subtle border (NOT a bright-blue
+// selected/checked bar). Recording: a faint blue-tinted border to signal the
+// widget is listening. Styled explicitly so the recorder never renders as the
+// platform's "pressed/default" highlighted push button.
+static const char* kRecorderIdleStyle =
+    "HotkeyRecorder {"
+    " background-color: palette(base);"
+    " color: palette(text);"
+    " border: 1px solid palette(mid);"
+    " border-radius: 6px;"
+    " padding: 3px 8px;"
+    " text-align: center; }"
+    "HotkeyRecorder:hover {"
+    " border-color: palette(dark); }";
+
+static const char* kRecorderRecordingStyle =
+    "HotkeyRecorder {"
+    " background-color: palette(base);"
+    " color: palette(text);"
+    " border: 2px solid #007AFF;"   // systemBlue — only while listening
+    " border-radius: 6px;"
+    " padding: 2px 7px;"
+    " text-align: center; }";
+
 HotkeyRecorder::HotkeyRecorder(QWidget* parent) : QPushButton(parent) {
     setFocusPolicy(Qt::StrongFocus);
+    setCheckable(false);
+    setStyleSheet(kRecorderIdleStyle);
     connect(this, &QPushButton::clicked, this, &HotkeyRecorder::startRecording);
 }
 
 void HotkeyRecorder::startRecording() {
     m_recording = true;
+    setStyleSheet(kRecorderRecordingStyle);
     setText(Loc::t("recorder.press"));
     setFocus(Qt::OtherFocusReason);
 }
@@ -159,9 +186,10 @@ void HotkeyRecorder::startRecording() {
 void HotkeyRecorder::keyPressEvent(QKeyEvent* event) {
     if (!m_recording) { QPushButton::keyPressEvent(event); return; }
 
-    // Esc — cancel recording, restore previous display.
+    // Esc — cancel recording, restore previous display + idle style.
     if (event->key() == Qt::Key_Escape) {
         m_recording = false;
+        setStyleSheet(kRecorderIdleStyle);
         setText(Settings::instance().hotKeyDisplay());
         return;
     }
@@ -192,6 +220,7 @@ void HotkeyRecorder::keyPressEvent(QKeyEvent* event) {
     const QString display = displayString(mods, keyText);
 
     m_recording = false;
+    setStyleSheet(kRecorderIdleStyle);
     setText(display);
     emit captured(carbonCode, carbonMods, display);
 }
@@ -349,15 +378,14 @@ QWidget* SettingsWindow::buildGeneralTab() {
 
     auto* tab = new QWidget;
     auto* outer = new QVBoxLayout(tab);
-    outer->setContentsMargins(20, 16, 20, 16);
+    outer->setContentsMargins(20, 18, 20, 16);
     outer->setSpacing(12);
 
-    // The settings rows live inside a titled group box so labels/controls are
-    // visually framed and right-aligned consistently, rather than floating loose
-    // against the tab edge.
-    auto* settingsGroup = new QGroupBox(Loc::t("settings.title"));
-    auto* form = new QFormLayout(settingsGroup);
-    form->setContentsMargins(14, 14, 14, 14);
+    // Rows laid out plainly on the tab background — NO surrounding titled group
+    // box (matches the native General tab's clean light look). A QFormLayout
+    // keeps the labels right-aligned in a column with the controls beside them.
+    auto* form = new QFormLayout;
+    form->setContentsMargins(0, 0, 0, 0);
     form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
     form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
@@ -387,12 +415,21 @@ QWidget* SettingsWindow::buildGeneralTab() {
             this, &SettingsWindow::onLanguageChanged);
     form->addRow(Loc::t("settings.language"), langCombo);
 
-    // --- Menu-bar icon: segmented preset chooser + custom-image button ---
+    // --- Menu-bar icon: clean segmented preset chooser + custom-image button ---
     {
         auto* iconRow = new QWidget;
         auto* h = new QHBoxLayout(iconRow);
         h->setContentsMargins(0, 0, 0, 0);
-        h->setSpacing(0);
+        h->setSpacing(4);   // small gaps so the icons read as a tidy segmented row
+
+        // A subtle checked-state so the active segment is obvious but not the
+        // bright-blue default; auto-raise keeps the idle buttons borderless.
+        static const char* kSegStyle =
+            "QToolButton { border: 1px solid transparent; border-radius: 5px; }"
+            "QToolButton:hover { background-color: palette(midlight); }"
+            "QToolButton:checked {"
+            " background-color: palette(highlight);"
+            " border: 1px solid palette(highlight); }";
 
         auto* group = new QButtonGroup(iconRow);
         group->setExclusive(true);
@@ -406,22 +443,34 @@ QWidget* SettingsWindow::buildGeneralTab() {
             auto* b = new QToolButton(iconRow);
             b->setCheckable(true);
             b->setAutoRaise(true);
-            b->setFixedSize(33, 26);
+            b->setFixedSize(30, 26);
+            b->setIconSize(QSize(18, 18));
             b->setIcon(barIconAsset(kBarIcons.at(i)));
+            b->setStyleSheet(kSegStyle);
             if (i == selectedSeg) b->setChecked(true);
             group->addButton(b, i);
             h->addWidget(b);
         }
         connect(group, &QButtonGroup::idClicked, this, &SettingsWindow::onBarIconSegment);
 
+        // A thin separator before the custom-image button so it reads as a
+        // distinct affordance, not a sixth preset.
+        auto* sep = new QFrame;
+        sep->setFrameShape(QFrame::VLine);
+        sep->setFrameShadow(QFrame::Sunken);
+        h->addSpacing(4);
+        h->addWidget(sep);
+        h->addSpacing(4);
+
         // Custom image button (SF Symbol "photo").
         auto* custom = new QToolButton(iconRow);
         custom->setAutoRaise(true);
         custom->setFixedSize(30, 26);
+        custom->setIconSize(QSize(18, 18));
         custom->setIcon(barIconAsset("photo"));
+        custom->setStyleSheet(kSegStyle);
         custom->setToolTip(Loc::t("settings.customIcon"));
         connect(custom, &QToolButton::clicked, this, &SettingsWindow::chooseCustomIcon);
-        h->addSpacing(6);
         h->addWidget(custom);
         h->addStretch(1);
 
@@ -477,7 +526,7 @@ QWidget* SettingsWindow::buildGeneralTab() {
         form->addRow(QString(), launch);
     }
 
-    outer->addWidget(settingsGroup);
+    outer->addLayout(form);
     outer->addStretch(1);
 
     // About section pinned at the bottom of the General tab.
@@ -496,65 +545,66 @@ QWidget* SettingsWindow::buildFeaturesTab() {
     auto* tab = new QWidget;
     auto* v = new QVBoxLayout(tab);
     v->setContentsMargins(20, 20, 20, 20);
-    v->setSpacing(14);   // consistent gap between grouped sections
+    v->setSpacing(6);
 
-    // Each section is a titled QGroupBox holding a vertical stack of checkboxes,
-    // so the tab reads as three tidy, aligned groups instead of loose labels and
-    // hand-tuned spacers.
-    auto makeGroup = [&](const QString& title) -> QVBoxLayout* {
-        auto* box = new QGroupBox(title);
-        auto* gl = new QVBoxLayout(box);
-        gl->setContentsMargins(14, 12, 14, 12);
-        gl->setSpacing(8);
-        v->addWidget(box);
-        return gl;
+    // Bold text section headers + plain checkboxes (matching the native Features
+    // tab) — NOT boxed group boxes. Each header gets a little top margin so the
+    // sections read as distinct blocks.
+    auto addHeader = [&](const QString& title, bool first) {
+        if (!first) v->addSpacing(12);
+        auto* h = new QLabel(title);
+        QFont hf = h->font();
+        hf.setBold(true);
+        h->setFont(hf);
+        v->addWidget(h);
     };
-    auto check = [&](QVBoxLayout* into, const QString& title, bool on,
+    auto check = [&](const QString& title, bool on,
                      std::function<void(bool)> handler) {
         auto* b = new QCheckBox(title);
         b->setChecked(on);
+        // Indent checkboxes slightly under their bold header.
+        b->setStyleSheet("QCheckBox { margin-left: 2px; }");
         connect(b, &QCheckBox::toggled, this, [handler](bool val){ handler(val); });
-        into->addWidget(b);
+        v->addWidget(b);
     };
 
     // Tools.
-    {
-        QVBoxLayout* g = makeGroup(Loc::t("features.toolsTitle"));
-        for (Tool t : kFeatureTools) {
-            const QString key = QStringLiteral("tool.%1").arg(QString::fromUtf8(toolKey(t)));
-            check(g, Loc::t(key), s.isToolEnabled(t), [t](bool on) {
-                Settings::instance().setToolEnabled(t, on);
-            });
-        }
+    addHeader(Loc::t("features.toolsTitle"), /*first=*/true);
+    for (Tool t : kFeatureTools) {
+        const QString key = QStringLiteral("tool.%1").arg(QString::fromUtf8(toolKey(t)));
+        check(Loc::t(key), s.isToolEnabled(t), [t](bool on) {
+            Settings::instance().setToolEnabled(t, on);
+        });
     }
 
     // Interface.
-    {
-        QVBoxLayout* g = makeGroup(Loc::t("features.interfaceTitle"));
-        check(g, Loc::t("features.showColors"), s.showColorPalette(), [](bool on) {
-            Settings::instance().setShowColorPalette(on);
-        });
-    }
+    addHeader(Loc::t("features.interfaceTitle"), /*first=*/false);
+    check(Loc::t("features.showColors"), s.showColorPalette(), [](bool on) {
+        Settings::instance().setShowColorPalette(on);
+    });
+    // Animated dimming — directly under "Show color palette" (default OFF).
+    check(Loc::t("features.animatedDim"), s.animatedDim(), [](bool on) {
+        Settings::instance().setAnimatedDim(on);
+    });
 
     // Text.
-    {
-        QVBoxLayout* g = makeGroup(Loc::t("features.textTitle"));
-        check(g, Loc::t("features.textAlignment"), s.textAlignmentEnabled(), [](bool on) {
-            Settings::instance().setTextAlignmentEnabled(on);
-        });
-        check(g, Loc::t("features.textBackground"), s.textBackgroundEnabled(), [](bool on) {
-            Settings::instance().setTextBackgroundEnabled(on);
-        });
-    }
+    addHeader(Loc::t("features.textTitle"), /*first=*/false);
+    check(Loc::t("features.textAlignment"), s.textAlignmentEnabled(), [](bool on) {
+        Settings::instance().setTextAlignmentEnabled(on);
+    });
+    check(Loc::t("features.textBackground"), s.textBackgroundEnabled(), [](bool on) {
+        Settings::instance().setTextBackgroundEnabled(on);
+    });
 
-    // Footer hint.
+    v->addStretch(1);
+
+    // Footer hint at the very bottom (gray, small).
     auto* hint = new QLabel(Loc::t("features.hint"));
     QFont f = hint->font(); f.setPointSize(11); hint->setFont(f);
     hint->setStyleSheet("color: palette(mid);");
     hint->setWordWrap(true);
     v->addWidget(hint);
 
-    v->addStretch(1);
     return tab;
 }
 

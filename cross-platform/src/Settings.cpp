@@ -15,6 +15,7 @@ constexpr char kModifiers[]     = "hotKeyModifiers";
 constexpr char kDisplay[]       = "hotKeyDisplay";
 constexpr char kDim[]           = "dimOpacity";
 constexpr char kDownscale[]     = "downscaleRetina";
+constexpr char kAnimatedDim[]   = "animatedDim";
 constexpr char kLanguage[]      = "language";
 constexpr char kSaveFolder[]    = "saveFolder";
 constexpr char kBarIcon[]       = "barIcon";
@@ -77,6 +78,15 @@ bool Settings::downscaleRetina() const {
 
 void Settings::setDownscaleRetina(bool v) {
     m_s.setValue(kDownscale, v);
+}
+
+bool Settings::animatedDim() const {
+    // Default false: dim layer appears/disappears instantly (current behavior).
+    return m_s.value(kAnimatedDim, false).toBool();
+}
+
+void Settings::setAnimatedDim(bool v) {
+    m_s.setValue(kAnimatedDim, v);
 }
 
 // --- General ---

@@ -210,25 +210,39 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
         p.setPen(tint);
         p.drawText(box.adjusted(-side * 0.05, -side * 0.05, side * 0.05, side * 0.05),
                    Qt::AlignCenter, QStringLiteral("A"));
-    } else if (symbol == "arrow.uturn.backward") {
+    } else if (symbol == "arrow.uturn.backward" || symbol == "arrow.uturn.forward") {
+        // Clean 3/4-circle undo (CCW) / redo (CW) arrow with a filled arrowhead
+        // at the moving end, oriented along the arc's local travel direction.
+        // undo and redo are exact horizontal mirrors (start 305°/+250° vs
+        // 235°/-250°), so the pair reads symmetrically.
+        const bool forward = (symbol == "arrow.uturn.forward");
+        const qreal cx = px(0.50), cy = py(0.52);
+        const qreal R  = w * 0.34;
+        const QRectF aRect(cx - R, cy - R, 2 * R, 2 * R);
+        const qreal startDeg = forward ? 235.0 : 305.0;
+        const qreal sweepDeg = forward ? -250.0 : 250.0;
         QPainterPath arc;
-        arc.moveTo(px(0.20), py(0.30));
-        arc.arcTo(QRectF(px(0.20), py(0.20), w * 0.65, h * 0.55), 90, -270);
+        arc.arcMoveTo(aRect, startDeg);
+        arc.arcTo(aRect, startDeg, sweepDeg);
         p.drawPath(arc);
-        QPainterPath head;
-        head.moveTo(px(0.05), py(0.30));
-        head.lineTo(px(0.20), py(0.10));
-        head.lineTo(px(0.35), py(0.30));
-        p.drawPath(head);
-    } else if (symbol == "arrow.uturn.forward") {
-        QPainterPath arc;
-        arc.moveTo(px(0.80), py(0.30));
-        arc.arcTo(QRectF(px(0.15), py(0.20), w * 0.65, h * 0.55), 90, 270);
-        p.drawPath(arc);
-        QPainterPath head;
-        head.moveTo(px(0.95), py(0.30));
-        head.lineTo(px(0.80), py(0.10));
-        head.lineTo(px(0.65), py(0.30));
+        const QPointF a1 = arc.pointAtPercent(1.0);
+        const QPointF a0 = arc.pointAtPercent(0.92);
+        QPointF dir = a1 - a0;
+        const qreal dl = std::hypot(dir.x(), dir.y());
+        if (dl > 0) dir /= dl;
+        auto rot = [](QPointF v, qreal ang) {
+            return QPointF(v.x() * std::cos(ang) - v.y() * std::sin(ang),
+                           v.x() * std::sin(ang) + v.y() * std::cos(ang));
+        };
+        const qreal hl = w * 0.34, spread = 0.55;
+        const QPointF hb1 = a1 - rot(dir,  spread) * hl;
+        const QPointF hb2 = a1 - rot(dir, -spread) * hl;
+        QPainterPath head(a1);
+        head.lineTo(hb1);
+        head.lineTo(hb2);
+        head.closeSubpath();
+        p.setPen(QPen(tint, side * 0.045, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(tint);
         p.drawPath(head);
     } else if (symbol == "doc.on.doc") {
         p.drawRoundedRect(QRectF(px(0.05), py(0.20), w * 0.55, h * 0.70), 2, 2);
@@ -259,6 +273,47 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
         p.drawLine(QPointF(px(0.5 - d), py(0.5 - d)), QPointF(px(0.5 + d), py(0.5 + d)));
     }
 
+    p.end();
+    return QIcon(pm);
+}
+
+// Antialiased color well for the palette. Replaces the QSS `border:1px solid`
+// circle, which aliased badly on a tiny 18px rounded button (the "pixelated
+// outline" the user reported). Drawn into a 2x pixmap: a filled AA circle with a
+// subtle contrast ring; the selected well gets a bright outer ring + checkmark.
+QIcon makeSwatch(const QColor& color, bool selected, int d = 18) {
+    const qreal dpr = 2.0;
+    QPixmap pm(int(d * dpr), int(d * dpr));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const qreal ringInset = selected ? 2.2 : 1.0;
+    const QRectF r(ringInset, ringInset, d - 2 * ringInset, d - 2 * ringInset);
+    p.setPen(Qt::NoPen);
+    p.setBrush(color);
+    p.drawEllipse(r);
+
+    // Contrast ring on the fill edge: dark on light swatches, light on dark.
+    const QColor edge = Palette::isLight(color) ? QColor(0, 0, 0, 70)
+                                                : QColor(255, 255, 255, 150);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(edge, 1.0));
+    p.drawEllipse(r);
+
+    if (selected) {
+        p.setPen(QPen(QColor(255, 255, 255, 235), 1.6));
+        p.drawEllipse(QRectF(1.0, 1.0, d - 2.0, d - 2.0));
+        const QColor tint = Palette::isLight(color) ? Qt::black : Qt::white;
+        auto u = [&](qreal t) { return t * d; };
+        QPen cm(tint, d * 0.10, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(cm);
+        p.drawPolyline(QPolygonF({ QPointF(u(0.30), u(0.52)),
+                                   QPointF(u(0.45), u(0.68)),
+                                   QPointF(u(0.72), u(0.34)) }));
+    }
     p.end();
     return QIcon(pm);
 }
@@ -398,11 +453,12 @@ void ToolbarView::buildButtons() {
             // 18x18 circle, vertically centered within the 30px button row.
             const int wy = kPad + (kButtonSize - 18) / 2;
             well->setGeometry(int(x), wy, 18, 18);
-            // Paint the well (filled circle + white@50% border) via stylesheet-free
-            // approach: install an event filter would be heavier — instead draw it
-            // through an icon-less colored background painted by the well itself.
-            // We give it a colored background through a small helper repaint:
-            well->setStyleSheet(QString());  // custom painting handled below
+            // The well is painted as an antialiased icon (makeSwatch), not a QSS
+            // rounded border — the latter aliased on this tiny 18px button. Keep
+            // the button itself borderless/transparent; setSelectedColor assigns
+            // the swatch icon (and the selected ring + checkmark).
+            well->setStyleSheet(QStringLiteral("QPushButton{border:none;background:transparent;}"));
+            well->setIconSize(QSize(18, 18));
             connect(well, &QPushButton::clicked, this, [this, color, i] {
                 emit selectColorRequested(color);
                 setSelectedColor(i);
@@ -460,18 +516,11 @@ void ToolbarView::setSelectedColor(int paletteIndex) {
     for (int i = 0; i < m_colorButtons.size(); ++i) {
         const QColor color = m_colorButtons[i].first;
         QPushButton* well = m_colorButtons[i].second;
-        const QString base = QStringLiteral(
-            "QPushButton{border:1px solid rgba(255,255,255,128);"
-            "border-radius:9px;background:%1;}").arg(color.name());
-        well->setStyleSheet(base);
-        if (i == paletteIndex) {
-            // Contrast checkmark: black on light swatch, white on dark.
-            const QColor tint = Palette::isLight(color) ? Qt::black : Qt::white;
-            well->setIcon(makeGlyph(QStringLiteral("checkmark"), tint, 18));
-            well->setIconSize(QSize(11, 11));   // pointSize 11, bold
-        } else {
-            well->setIcon(QIcon());
-        }
+        // Antialiased swatch icon (filled circle + ring; selected adds the bright
+        // ring + checkmark). No QSS border -> no aliased outline.
+        well->setStyleSheet(QStringLiteral("QPushButton{border:none;background:transparent;}"));
+        well->setIcon(makeSwatch(color, i == paletteIndex, 18));
+        well->setIconSize(QSize(18, 18));
     }
 }
 

@@ -48,6 +48,8 @@ public:
     void setDimOpacity(double v);
     bool downscaleRetina() const;            // default false (save at 1x)
     void setDownscaleRetina(bool v);
+    bool animatedDim() const;                // default false (instant dim/teardown)
+    void setAnimatedDim(bool v);
 
     // --- General ---
     QString language() const;                // default "en"; one of en/ru/uk

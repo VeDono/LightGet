@@ -27,6 +27,7 @@
 #include <QClipboard>
 #include <QCursor>
 #include <QTextEdit>
+#include <QTextDocument>
 #include <QTextCursor>
 #include <QTextBlockFormat>
 #include <QPushButton>
@@ -40,8 +41,11 @@
 #include <QFileInfo>
 #include <QDateTime>
 #include <QPropertyAnimation>
+#include <QVariantAnimation>
+#include <QEasingCurve>
 #include <QGraphicsOpacityEffect>
 #include <QStringList>
+#include <QTimer>
 
 #include <cmath>
 #include <algorithm>
@@ -252,7 +256,12 @@ void OverlayWindow::paintEvent(QPaintEvent*) {
     p.setRenderHint(QPainter::TextAntialiasing, true);
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
-    drawImageUpright(p, m_screenshot, QRectF(rect()));
+    // Blit the cached upright backdrop instead of re-rendering the full QImage
+    // (with its orientation transform) every frame — pixmap blits are GPU-fast,
+    // which is what keeps selection-drag smooth.
+    ensureBackdrop();
+    p.drawPixmap(rect(), m_backdrop);
+
     drawDim(p);
     for (int i = 0; i < m_annotations.size(); ++i) {
         if (i == m_editingIndex) continue;   // hide the one being edited inline
@@ -264,6 +273,31 @@ void OverlayWindow::paintEvent(QPaintEvent*) {
     drawSnapGuides(p);
 }
 
+void OverlayWindow::ensureBackdrop() {
+    // (Re)build the cached upright screenshot pixmap when it is missing or no
+    // longer matches the widget's logical size. The cache carries the device
+    // pixel ratio so the backdrop stays sharp on Retina displays.
+    const qreal dpr = devicePixelRatioF();
+    const QSize logical = size();
+    const QSize wantPx(static_cast<int>(std::ceil(logical.width()  * dpr)),
+                       static_cast<int>(std::ceil(logical.height() * dpr)));
+    if (!m_backdrop.isNull() &&
+        m_backdrop.size() == wantPx &&
+        qFuzzyCompare(m_backdrop.devicePixelRatio(), dpr)) {
+        return;
+    }
+    if (logical.isEmpty()) return;
+
+    QPixmap pm(wantPx);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter pp(&pm);
+    pp.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    drawImageUpright(pp, m_screenshot, QRectF(QPointF(0, 0), QSizeF(logical)));
+    pp.end();
+    m_backdrop = pm;
+}
+
 void OverlayWindow::drawImageUpright(QPainter& p, const QImage& img, const QRectF& rect) {
     // Qt draws images upright already — NO Y-flip. Scale the full screenshot
     // into the view rect (logical points).
@@ -272,15 +306,65 @@ void OverlayWindow::drawImageUpright(QPainter& p, const QImage& img, const QRect
 
 void OverlayWindow::drawDim(QPainter& p) {
     // Black @ dimOpacity over everything, with an even-odd hole over selection.
+    // m_dimProgress (1.0 unless an animated fade is running) scales the alpha so
+    // the dim layer can ease in/out when Settings::animatedDim() is on.
     p.save();
     QColor dim(0, 0, 0);
-    dim.setAlphaF(static_cast<float>(Settings::instance().dimOpacity()));
+    dim.setAlphaF(static_cast<float>(Settings::instance().dimOpacity() * m_dimProgress));
     QPainterPath path;
     path.setFillRule(Qt::OddEvenFill);
     path.addRect(QRectF(rect()));
     if (m_selection) path.addRect(*m_selection);
     p.fillPath(path, dim);
     p.restore();
+}
+
+void OverlayWindow::startDimFadeIn() {
+    // 0 -> 1 over ~0.18s with an ease-out curve. Only ever called when animated
+    // dimming is enabled; restarts cleanly if invoked again.
+    if (m_dimAnim) { m_dimAnim->stop(); m_dimAnim->deleteLater(); m_dimAnim = nullptr; }
+    m_dimProgress = 0.0;
+    update();
+    auto* anim = new QVariantAnimation(this);
+    anim->setStartValue(0.0);
+    anim->setEndValue(1.0);
+    anim->setDuration(180);
+    anim->setEasingCurve(QEasingCurve::OutCubic);
+    connect(anim, &QVariantAnimation::valueChanged, this, [this](const QVariant& v) {
+        m_dimProgress = v.toReal();
+        update();
+    });
+    connect(anim, &QVariantAnimation::finished, this, [this, anim]() {
+        m_dimProgress = 1.0;
+        if (m_dimAnim == anim) m_dimAnim = nullptr;
+        anim->deleteLater();
+        update();
+    });
+    m_dimAnim = anim;
+    anim->start();
+}
+
+void OverlayWindow::startDimFadeOut() {
+    // current -> 0 over ~0.16s. The controller defers the actual hide()/delete
+    // until this finishes so the fade is visible; we only animate the alpha here.
+    if (m_dimAnim) { m_dimAnim->stop(); m_dimAnim->deleteLater(); m_dimAnim = nullptr; }
+    auto* anim = new QVariantAnimation(this);
+    anim->setStartValue(m_dimProgress);
+    anim->setEndValue(0.0);
+    anim->setDuration(160);
+    anim->setEasingCurve(QEasingCurve::InCubic);
+    connect(anim, &QVariantAnimation::valueChanged, this, [this](const QVariant& v) {
+        m_dimProgress = v.toReal();
+        update();
+    });
+    connect(anim, &QVariantAnimation::finished, this, [this, anim]() {
+        m_dimProgress = 0.0;
+        if (m_dimAnim == anim) m_dimAnim = nullptr;
+        anim->deleteLater();
+        update();
+    });
+    m_dimAnim = anim;
+    anim->start();
 }
 
 void OverlayWindow::drawAnnotation(QPainter& p, const Annotation& a) {
@@ -1096,6 +1180,19 @@ void OverlayWindow::sizeFieldToFit() {
     const qreal w = std::max<qreal>(40, std::ceil(bounding.width()) + 14);
     const qreal h = std::max<qreal>(font.pointSizeF() + 8, std::ceil(bounding.height()) + 8);
     m_textEditor->resize(static_cast<int>(w), static_cast<int>(h));
+
+    // With NoWrap the document otherwise has no reference width, so per-block
+    // center/right alignment is invisible while editing. Give the document a text
+    // width equal to the editor's inner content width so shorter lines have room
+    // to shift. Derive it from the just-computed widget width `w` (not
+    // viewport()->width(), which may lag a frame after resize()): subtract the
+    // document margin on both sides. The frame is NoFrame and scrollbars are off,
+    // so the viewport width ~= `w`. Runs on every textChanged via sizeFieldToFit,
+    // keeping the width in step with the widest line. Single-line text is
+    // unaffected (a lone full-width line aligns identically left/center/right).
+    QTextDocument* doc = m_textEditor->document();
+    const qreal contentWidth = std::max<qreal>(1.0, w - 2.0 * doc->documentMargin());
+    doc->setTextWidth(contentWidth);
 }
 
 void OverlayWindow::showEditControls() {

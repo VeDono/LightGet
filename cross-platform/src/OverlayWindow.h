@@ -32,11 +32,14 @@
 
 #include <QWidget>
 #include <QImage>
+#include <QPixmap>
 #include <QColor>
 #include <QRectF>
 #include <QPointF>
 #include <QVector>
 #include <optional>
+
+class QVariantAnimation;
 
 class ToolbarView;
 class TextInspectorView;
@@ -60,6 +63,14 @@ public:
     // Apply native shield window level / collection behavior AFTER show()
     // (macOS: CGShieldingWindowLevel via NSWindow; see DESIGN.md). No-op elsewhere.
     void applyShieldLevel();
+
+    // Optional smooth fade of the dim layer (gated by Settings::animatedDim()).
+    // fade-in:  m_dimProgress 0 -> 1 (~0.18s ease-out) after the overlay shows.
+    // fade-out: m_dimProgress current -> 0 (~0.16s) before teardown.
+    // When animated dimming is OFF these are never called and m_dimProgress
+    // stays 1.0, so the dim renders instantly exactly as before.
+    void startDimFadeIn();
+    void startDimFadeOut();
 
 signals:
     void finished();          // overlay should be torn down (Esc / copy / save / close)
@@ -216,4 +227,16 @@ private:
     bool m_snapGuideV = false;
     bool m_snapGuideH = false;
     bool m_cursorRectsDisabled = false;
+
+    // Animated dimming. m_dimProgress multiplies the dim alpha (1.0 = full dim,
+    // the default static value). m_dimAnim drives it only when animatedDim is on.
+    qreal m_dimProgress = 1.0;
+    QVariantAnimation* m_dimAnim = nullptr;
+
+    // Cached upright screenshot backdrop, blitted each paint instead of
+    // re-rendering the full QImage (with orientation transform) every frame.
+    // Built lazily on first paint / when the widget size changes; carries the
+    // device pixel ratio so it stays sharp on Retina.
+    QPixmap m_backdrop;
+    void ensureBackdrop();   // (re)build m_backdrop if missing or stale
 };
