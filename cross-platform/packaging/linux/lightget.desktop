@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=LightGet
+GenericName=Screenshot Tool
+Comment=Capture, annotate, copy and save screenshots
+Exec=LightGet
+Icon=lightget
+Categories=Utility;Graphics;
+Terminal=false
+Keywords=screenshot;capture;annotate;snip;
