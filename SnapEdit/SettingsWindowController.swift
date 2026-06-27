@@ -338,12 +338,21 @@ final class SettingsWindowController: NSWindowController {
         let post = makeGrayText(" \(year) · \(Loc.t("settings.madeInUkraine"))", size: fontSize)
         pre.sizeToFit(); nameLink.sizeToFit(); post.sizeToFit()
         let total = pre.frame.width + nameLink.frame.width + post.frame.width
-        let baseY = cardY - 34
+        let baseY = cardY - 30
         var x = (W - total) / 2
         pre.setFrameOrigin(CGPoint(x: x, y: baseY));       x += pre.frame.width
         nameLink.setFrameOrigin(CGPoint(x: x, y: baseY));  x += nameLink.frame.width
         post.setFrameOrigin(CGPoint(x: x, y: baseY))
         v.addSubview(pre); v.addSubview(nameLink); v.addSubview(post)
+
+        // Версия + редакция, чтобы было видно отличие от кросс-платформенной (Qt) сборки.
+        // «Native (macOS)» намеренно оставлено литералом (не локализуется).
+        let version = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0.0"
+        let editionLabel = makeGrayText("LightGet \(version) · Native (macOS)", size: fontSize)
+        editionLabel.alignment = .center
+        editionLabel.sizeToFit()
+        editionLabel.setFrameOrigin(CGPoint(x: (W - editionLabel.frame.width) / 2, y: baseY - 16))
+        v.addSubview(editionLabel)
     }
 
     private func makeGrayText(_ text: String, size: CGFloat) -> NSTextField {
