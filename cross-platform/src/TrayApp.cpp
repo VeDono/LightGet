@@ -161,7 +161,9 @@ void TrayApp::setupTray() {
     m_tray = new QSystemTrayIcon(this);
     applyBarIcon();
     m_menu = buildMenu();
-    m_tray->setContextMenu(m_menu);
+    // No setContextMenu(): we pop m_menu MANUALLY in onTrayActivated so we can
+    // center it horizontally under the icon. The native context menu can't be
+    // repositioned (the OS anchors it to the status item).
     connect(m_tray, &QSystemTrayIcon::activated, this,
             [this](QSystemTrayIcon::ActivationReason reason) {
                 onTrayActivated(static_cast<int>(reason));
@@ -241,25 +243,24 @@ QMenu* TrayApp::buildMenu() {
 void TrayApp::rebuildMenu() {
     QMenu* old = m_menu;
     m_menu = buildMenu();
-    if (m_tray) m_tray->setContextMenu(m_menu);
     delete old;     // releases the previous QActions (incl. old m_captureAction)
 }
 
 void TrayApp::onTrayActivated(int reason) {
-#if !defined(Q_OS_MAC)
-    // On platforms where a left-click does not auto-open the context menu,
-    // mirror the macOS status-item behaviour by popping the menu at the cursor.
-    //
-    // On macOS, QSystemTrayIcon::setContextMenu() ALREADY shows the menu on both
-    // left- and right-click, so popping it here too produced TWO overlapping
-    // menus ("two sets of options"). Let the system context menu handle it there;
-    // only platforms without that auto-open behaviour need the manual popup.
-    if (reason == QSystemTrayIcon::Trigger && m_menu && m_tray) {
-        m_menu->popup(QCursor::pos());
-    }
-#else
-    Q_UNUSED(reason);
-#endif
+    Q_UNUSED(reason);   // any activation (left/right/etc.) opens the menu
+    if (!m_menu || !m_tray) return;
+    // Show the menu CENTERED horizontally under the tray icon: the menu's center
+    // sits right below the icon's center. Use the icon's screen rect when the
+    // platform reports it; otherwise center on the click position (some platforms,
+    // notably macOS, may not expose the status-item geometry).
+    const int menuW = m_menu->sizeHint().width();
+    const QRect iconRect = m_tray->geometry();
+    QPoint pos;
+    if (!iconRect.isEmpty())
+        pos = QPoint(iconRect.center().x() - menuW / 2, iconRect.bottom() + 2);
+    else
+        pos = QCursor::pos() - QPoint(menuW / 2, 0);
+    m_menu->popup(pos);
 }
 
 // ===========================================================================
