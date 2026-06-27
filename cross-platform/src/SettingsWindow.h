@@ -180,6 +180,11 @@ protected:
     void resizeEvent(QResizeEvent*) override;
 
 private:
+    // Position the trailing preview chip: right-aligned to a shared column and
+    // vertically centered on the SAME height() used to paint the checkbox, so
+    // the chip's center always matches the checkbox's center (height()/2).
+    void positionTrailing();
+
     DesignTokens m_tk;
     QString  m_label;
     QWidget* m_trailing = nullptr;

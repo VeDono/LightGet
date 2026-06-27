@@ -325,6 +325,53 @@ private:
     QColor m_color;
 };
 
+// ---- Palette glyph (Features "Show color palette" preview chip) -------------
+// Custom-painted fixed-size widget (mirrors ToolGlyph) that draws the 5 palette
+// dots — red / green / blue / yellow / white — evenly spaced and CENTERED both
+// horizontally and vertically within its own bounds. Painting (vs a QLabel
+// QHBoxLayout) is what guarantees the cluster is centered: the earlier layout
+// version left the dots in the left of an inflated chip and ~7px low. The white
+// dot gets a 1px border (the chip bg supplies contrast for the others). The
+// fixed size is chosen so the resulting chip is the same compact width as a
+// tool chip (ToolGlyph is 36px; this is 40px to fit five dots legibly).
+class PaletteGlyph : public QWidget {
+public:
+    explicit PaletteGlyph(const QColor& borderColor, QWidget* parent = nullptr)
+        : QWidget(parent), m_border(borderColor) {
+        setFixedSize(40, 18);
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    }
+    QSize sizeHint() const override { return QSize(40, 18); }
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        static const char* cols[5] =
+            { "#ff453a", "#32d74b", "#0a84ff", "#ffd60a", "#ffffff" };
+        const int n = 5;
+        const qreal d = 6.0;          // dot diameter
+        const qreal gap = 2.5;        // gap between dots
+        const qreal clusterW = n * d + (n - 1) * gap;
+        // Center the cluster horizontally + vertically within the widget bounds.
+        const qreal x0 = (width() - clusterW) / 2.0;
+        const qreal cy = height() / 2.0;
+        for (int i = 0; i < n; ++i) {
+            const qreal cx = x0 + i * (d + gap) + d / 2.0;
+            const QColor c(QString::fromUtf8(cols[i]));
+            if (i == n - 1) {         // white dot: outline so it reads on the chip
+                p.setPen(QPen(m_border, 1.0));
+                p.setBrush(c);
+            } else {
+                p.setPen(Qt::NoPen);
+                p.setBrush(c);
+            }
+            p.drawEllipse(QPointF(cx, cy), d / 2.0, d / 2.0);
+        }
+    }
+private:
+    QColor m_border;
+};
+
 // Version + edition (set as compile definitions in CMakeLists.txt). Defaults
 // keep the file self-contained if a definition is ever missing.
 #ifndef LIGHTGET_VERSION
@@ -566,17 +613,39 @@ QSize CheckRow::sizeHint() const { return QSize(260, 38); }
 void CheckRow::enterEvent(QEnterEvent*) { m_hover = true; update(); }
 void CheckRow::leaveEvent(QEvent*)      { m_hover = false; update(); }
 
-void CheckRow::resizeEvent(QResizeEvent*) {
-    if (m_trailing) {
-        QSize sz = m_trailing->sizeHint();
-        if (!sz.isValid() || sz.isEmpty()) sz = m_trailing->size();
-        const int x = width() - kRowPadH - sz.width();
-        const int y = (height() - sz.height()) / 2;
-        m_trailing->setGeometry(x, y, sz.width(), sz.height());
+void CheckRow::positionTrailing() {
+    if (!m_trailing) return;
+    // Use the chip's REAL size, not sizeHint(): the chips are fixed-size
+    // (setFixedSize) so their min==max==actual height (26), but QWidget::sizeHint()
+    // ignores the fixed size and reports the layout's natural height (~18, driven
+    // by the 18px inner glyph). Centering against the 18px hint while the chip
+    // paints 26px tall is exactly what pushed every chip ~4px below the checkbox.
+    // For a fixed-size widget minimumSize()==maximumSize()==the locked size.
+    QSize sz = m_trailing->maximumSize();
+    if (sz.width() >= QWIDGETSIZE_MAX || sz.height() >= QWIDGETSIZE_MAX ||
+        !sz.isValid() || sz.isEmpty()) {
+        sz = m_trailing->size();
+        if (!sz.isValid() || sz.isEmpty()) sz = m_trailing->sizeHint();
     }
+    // Right-aligned to the shared chip column; vertically centered on height()/2,
+    // the exact reference the checkbox is painted against (by = (height()-20)/2,
+    // center = height()/2). With the true 26px height these centers coincide.
+    const int x = width() - kRowPadH - sz.width();
+    const int y = (height() - sz.height()) / 2;
+    if (m_trailing->geometry() != QRect(x, y, sz.width(), sz.height()))
+        m_trailing->setGeometry(x, y, sz.width(), sz.height());
+}
+
+void CheckRow::resizeEvent(QResizeEvent*) {
+    positionTrailing();
 }
 
 void CheckRow::paintEvent(QPaintEvent*) {
+    // Reposition against the FINAL height() before painting, so the chip's
+    // vertical center can't drift from the checkbox's (resizeEvent may have run
+    // at a transient height during layout / offscreen grab).
+    positionTrailing();
+
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
 
@@ -1066,29 +1135,32 @@ void SettingsWindow::buildUI() {
     tabRow->setSpacing(6);
 
     const QColor inactiveBg = m_tk.dark ? QColor("#202023") : QColor("#e7e7ea");
+    // Folder tab style applied EXPLICITLY per active/inactive (not via :checked).
+    // The :checked pseudo-state is not re-evaluated by Qt's QSS engine in the
+    // offscreen --render-dump grab (no event loop), which made the active-tab
+    // highlight look stuck on General. Setting the full stylesheet on each switch
+    // repaints reliably in both the live app and the render.
+    auto styleTab = [this, inactiveBg](QPushButton* b, bool active) {
+        b->setStyleSheet(QStringLiteral(
+            "QPushButton {"
+            " padding:8px 26px; font-size:13px; font-weight:%1;"
+            " color:%2; background-color:%3;"
+            " border:1px solid %4; border-bottom:none;"
+            " border-top-left-radius:9px; border-top-right-radius:9px;"
+            " border-bottom-left-radius:0; border-bottom-right-radius:0; }"
+            "QPushButton:hover { color:%5; }")
+            .arg(QString(active ? "600" : "500"),
+                 colCss(active ? m_tk.text : m_tk.text2),
+                 colCss(active ? m_tk.bg : inactiveBg),
+                 colCss(m_tk.border),
+                 colCss(m_tk.text)));
+    };
     auto makeTab = [&](const QString& text) {
         auto* b = new QPushButton(text);
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
         b->setFocusPolicy(Qt::NoFocus);
-        // Folder tab: top-rounded corners, no bottom radius. Active = panel bg +
-        // strong text; inactive = muted bg + dim text (lifts to text on hover).
-        b->setStyleSheet(QStringLiteral(
-            "QPushButton {"
-            " padding:8px 26px; font-size:13px; font-weight:500;"
-            " color:%1; background-color:%2;"
-            " border:1px solid %3; border-bottom:none;"
-            " border-top-left-radius:9px; border-top-right-radius:9px;"
-            " border-bottom-left-radius:0; border-bottom-right-radius:0; }"
-            "QPushButton:hover:!checked { color:%4; }"
-            "QPushButton:checked {"
-            " color:%4; font-weight:600; background-color:%5;"
-            " border:1px solid %3; border-bottom:none; }")
-            .arg(colCss(m_tk.text2),    // 1 inactive text
-                 colCss(inactiveBg),    // 2 inactive bg
-                 colCss(m_tk.border),   // 3 border
-                 colCss(m_tk.text),     // 4 active/hover text
-                 colCss(m_tk.bg)));     // 5 active bg = panel bg
+        styleTab(b, false);
         return b;
     };
     m_tabGeneral  = makeTab(Loc::t("tab.general"));
@@ -1113,14 +1185,21 @@ void SettingsWindow::buildUI() {
     m_stack->addWidget(buildGeneralTab());
     m_stack->addWidget(buildFeaturesTab());
 
-    connect(tabGroup, &QButtonGroup::idClicked, this, [this](int id) {
+    auto applyActiveTab = [this, styleTab](int id) {
+        styleTab(m_tabGeneral,  id == 0);
+        styleTab(m_tabFeatures, id == 1);
+    };
+    connect(tabGroup, &QButtonGroup::idClicked, this, [this, applyActiveTab](int id) {
         m_currentTab = id;
         m_stack->setCurrentIndex(id);
+        applyActiveTab(id);
     });
 
-    // Restore the previously selected tab across rebuilds.
-    if (m_currentTab == 1) { m_tabFeatures->setChecked(true); m_stack->setCurrentIndex(1); }
-    else                   { m_tabGeneral->setChecked(true);  m_stack->setCurrentIndex(0); }
+    // Restore the previously selected tab across rebuilds (explicit style + state).
+    m_currentTab = (m_currentTab == 1) ? 1 : 0;
+    (m_currentTab == 1 ? m_tabFeatures : m_tabGeneral)->setChecked(true);
+    m_stack->setCurrentIndex(m_currentTab);
+    applyActiveTab(m_currentTab);
 
     // The tab row overlaps the panel by 1px so the active tab merges into it.
     auto* body = new QWidget;
@@ -1505,7 +1584,7 @@ QWidget* SettingsWindow::buildFeaturesTab() {
         auto* ch = new QHBoxLayout(chip);
         ch->setContentsMargins(11, 0, 11, 0);
         ch->setSpacing(5);
-        ch->addWidget(inner, 0, Qt::AlignVCenter);
+        ch->addWidget(inner, 0, Qt::AlignCenter);   // center content H+V in the chip
         // Resolve the content-driven width now, clamp to a shared minimum so the
         // narrow chips (line / dot) don't look tiny, then LOCK it so sizeHint()
         // and the actual width can never diverge.
@@ -1549,24 +1628,13 @@ QWidget* SettingsWindow::buildFeaturesTab() {
     // ===== Interface =====
     {
         std::vector<std::function<CheckRow*()>> makers;
-        // Show color palette + a row of swatches as the trailing preview.
+        // Show color palette + a custom-painted 5-dot preview as the trailing chip.
+        // Using a fixed-size painted PaletteGlyph (exactly like the tool chips use
+        // ToolGlyph) keeps the dots centered in the chip and the chip the same
+        // compact width as the tool chips.
         makers.push_back([this, &s, &previewChip]() {
-            auto* swatches = new QWidget;
-            auto* sw = new QHBoxLayout(swatches);
-            sw->setContentsMargins(0, 0, 0, 0);
-            sw->setSpacing(5);
-            const QStringList cols = {"#ff453a", "#32d74b", "#0a84ff", "#ffd60a", "#ffffff"};
-            for (const QString& c : cols) {
-                auto* dot = new QLabel;
-                dot->setFixedSize(11, 11);
-                QString extra = (c == "#ffffff")
-                    ? QStringLiteral("border:1px solid %1;").arg(colCss(m_tk.border))
-                    : QString();
-                dot->setStyleSheet(QStringLiteral(
-                    "background-color:%1; border-radius:5px; %2").arg(c, extra));
-                sw->addWidget(dot);
-            }
-            auto* chip = previewChip(swatches);
+            auto* glyph = new PaletteGlyph(m_tk.border);
+            auto* chip = previewChip(glyph);
             auto* row = new CheckRow(m_tk, Loc::t("features.showColors"),
                                      s.showColorPalette(), chip);
             connect(row, &QAbstractButton::toggled, this, [](bool on) {

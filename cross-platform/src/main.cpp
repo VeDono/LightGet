@@ -12,6 +12,7 @@
 #include "Settings.h"
 #include "TrayApp.h"
 #include "SettingsWindow.h"
+#include "Toolbar.h"
 #include "Localization.h"
 
 #include <QApplication>
@@ -124,7 +125,33 @@ bool dumpOne(const QString& dir, const QString& theme, bool dark, int tabIndex) 
     return img.save(path, "PNG");
 }
 
-// Drive all four dumps; returns process exit code (0 = all saved).
+// Grab the REAL ToolbarView (same construction path the overlay uses) under the
+// given palette/theme and save it. The toolbar always paints its own dark panel
+// surface regardless of palette, but we still render under each palette so the
+// dump mirrors the settings dump (light + dark) and would catch any palette-
+// dependent drift. We select a tool and (when the palette is enabled in Settings)
+// the toolbar already shows the color row, exercising the full design path.
+bool dumpToolbar(const QString& dir, const QString& theme, bool dark) {
+    QApplication::setPalette(dark ? makeDarkPalette() : makeLightPalette());
+    if (auto* hints = QGuiApplication::styleHints())
+        hints->setColorScheme(dark ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light);
+
+    ToolbarView tb;
+    tb.setPalette(QApplication::palette());
+    tb.rebuild();                      // lay out tools + palette + actions
+    tb.setSelectedTool(Tool::Select);  // show the active-tool (blue) state
+    tb.setSelectedColor(0);            // show the selected color well (red)
+    tb.ensurePolished();
+    tb.resize(tb.sizeHint());          // ToolbarView is fixed-size; honour it
+    QApplication::processEvents();     // let layout/styling settle before grabbing
+
+    const QString path =
+        QDir(dir).filePath(QStringLiteral("current_toolbar_%1.png").arg(theme));
+    const QPixmap pm = tb.grab();      // QWidget::grab works fully offscreen
+    return pm.toImage().save(path, "PNG");
+}
+
+// Drive all dumps; returns process exit code (0 = all saved).
 int runRenderDump(const QString& dir) {
     QDir().mkpath(dir);
     bool ok = true;
@@ -132,6 +159,8 @@ int runRenderDump(const QString& dir) {
     ok &= dumpOne(dir, QStringLiteral("dark"),  /*dark=*/true,  /*tab=*/0);
     ok &= dumpOne(dir, QStringLiteral("light"), /*dark=*/false, /*tab=*/1);
     ok &= dumpOne(dir, QStringLiteral("dark"),  /*dark=*/true,  /*tab=*/1);
+    ok &= dumpToolbar(dir, QStringLiteral("light"), /*dark=*/false);
+    ok &= dumpToolbar(dir, QStringLiteral("dark"),  /*dark=*/true);
     return ok ? 0 : 1;
 }
 
