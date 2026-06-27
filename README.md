@@ -48,9 +48,18 @@ Press a hotkey, the screen dims, you select an area and annotate it right there
 - Text tool: click to place, type, **Enter** to confirm, **Shift+Enter** for a new line,
   drag to move, corner handles to resize and rotate, inline panel for text/background color.
 
-## Screenshots
+## Video demo
 
-_Coming soon._
+https://github.com/user-attachments/assets/ac8c00cf-3264-4689-9c85-90b17594d783
+
+## Screenshots
+1:
+<img width="1534" height="853" alt="exampleOfWorkOfLightGetApp" src="https://github.com/user-attachments/assets/e780e8e8-1a9f-44c9-b2b3-a010b76c5528" />
+2:
+<img width="3071" height="1711" alt="image" src="https://github.com/user-attachments/assets/a1800d26-0e1d-4996-b093-60bbd35444f6" />
+3:
+<img width="3069" height="1717" alt="image" src="https://github.com/user-attachments/assets/2e3ad08a-2e7b-45da-9745-f1c22e0434e0" />
+
 
 <!--
 ![Selection](docs/selection.png)
