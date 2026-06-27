@@ -50,6 +50,12 @@ void OverlayWindow_applyShieldLevel(WId win) {
     [window setCollectionBehavior:(NSWindowCollectionBehaviorCanJoinAllSpaces |
                                    NSWindowCollectionBehaviorStationary |
                                    NSWindowCollectionBehaviorFullScreenAuxiliary)];
+    // Belt-and-suspenders: suppress the default macOS window-appear animation
+    // (the "screen zooms out and back" scale effect) here as well, in case this
+    // is the first place the NSWindow becomes addressable. The dedicated early
+    // hook (OverlayWindow_disableShowAnimation, called before show()) is the
+    // primary defense; this re-asserts it.
+    [window setAnimationBehavior:NSWindowAnimationBehaviorNone];
     // Make sure it can become key so it receives the keyboard (Esc / ⌘C) even at
     // shield level, and bring it to the very front of its level.
     [window setHidesOnDeactivate:NO];
@@ -63,6 +69,28 @@ void OverlayWindow_applyShieldLevel(WId win) {
     // can become key — see OverlayWindow.cpp.)
     [NSApp activateIgnoringOtherApps:YES];
     [window makeKeyAndOrderFront:nil];
+}
+
+// ---------------------------------------------------------------------------
+// OverlayWindow_disableShowAnimation — suppress the default macOS window-appear
+// animation for the overlay's NSWindow.
+//
+// When a frameless window is first shown, AppKit plays a subtle scale/fade
+// "appear" animation. For a full-screen shield overlay this reads as the whole
+// screen briefly zooming out and back. Setting animationBehavior = .none makes
+// the overlay snap in instantly (matching the native app). Must be called BEFORE
+// the window is shown (the call site uses winId(), which forces native NSWindow
+// creation so this hook can reach it early). Same WId->NSView->NSWindow climb and
+// nil guards as OverlayWindow_applyShieldLevel.
+// ---------------------------------------------------------------------------
+void OverlayWindow_disableShowAnimation(WId win) {
+    if (win == 0) return;
+    NSView* view = (__bridge NSView*)reinterpret_cast<void*>(win);
+    if (![view isKindOfClass:[NSView class]]) return;
+    NSWindow* window = [view window];
+    if (window == nil) return;
+
+    [window setAnimationBehavior:NSWindowAnimationBehaviorNone];
 }
 
 // ---------------------------------------------------------------------------

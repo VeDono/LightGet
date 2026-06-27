@@ -239,4 +239,22 @@ private:
     // device pixel ratio so it stays sharp on Retina.
     QPixmap m_backdrop;
     void ensureBackdrop();   // (re)build m_backdrop if missing or stale
+
+    // ----- Dirty-rect drag optimization -----
+    // During an active drag we repaint only the union of what the in-progress
+    // gesture touched last frame and what it touches this frame, instead of the
+    // whole Retina screenshot. m_lastPaintedDirty caches the integer device-
+    // independent rect that the *current gesture's* chrome occupied at the last
+    // repaint, so the next move can union old∪new and damage just that band.
+    // Null/empty => no cached bounds yet (force a full repaint of the gesture).
+    QRect m_lastPaintedDirty;
+
+    // Bounds (logical px, with a margin for chrome/handles/labels) of whatever
+    // the current drag is manipulating: the selection rect + its chrome, or the
+    // active annotation + its frame. Used to build the dirty region in
+    // mouseMoveEvent. Returns a null QRect when nothing is being dragged.
+    QRect currentDragBounds() const;
+    // Repaint only the union of the previous gesture bounds and the new bounds
+    // (each padded). Falls back to full update() when bounds are unavailable.
+    void updateDragRegion();
 };

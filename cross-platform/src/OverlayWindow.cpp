@@ -75,6 +75,22 @@ OverlayWindow::OverlayWindow(const QImage& screenshot, QScreen* screen, QWidget*
     setAttribute(Qt::WA_TranslucentBackground, true);
     setAttribute(Qt::WA_NoSystemBackground, true);
 
+    // PERF: skip Qt's automatic per-frame background erase. Our paintEvent ALWAYS
+    // blits the opaque cached screenshot backdrop across the entire damaged
+    // region as its first op, so every damaged pixel is overwritten with an opaque
+    // value — the erase-to-transparent would be immediately clobbered and is pure
+    // wasted work (a full-screen clear on every drag frame). WA_OpaquePaintEvent
+    // tells Qt the handler covers all its pixels, which is exactly true here.
+    //
+    // This coexists with WA_TranslucentBackground: that flag controls the NSWindow
+    // surface compositing (needed for the shield), while WA_OpaquePaintEvent only
+    // governs the pre-paint erase. Coverage is guaranteed by the backdrop blit, so
+    // no transparency/black leaks through. If the integrator's macOS build ever
+    // shows a black flash or stale-pixel artifact at the overlay edges, removing
+    // THIS ONE LINE restores the previous (correct but slower) erase-every-frame
+    // behavior without touching anything else.
+    setAttribute(Qt::WA_OpaquePaintEvent, true);
+
     // Default active color matches systemRed (palette index 0).
     m_color = Palette::colors().isEmpty() ? QColor(Qt::red) : Palette::colors().at(0);
 
@@ -84,6 +100,16 @@ OverlayWindow::OverlayWindow(const QImage& screenshot, QScreen* screen, QWidget*
 
     if (m_screen)
         setGeometry(m_screen->geometry());
+
+    // macOS: kill the default window-appear animation BEFORE the overlay is ever
+    // shown, so the screen does NOT visibly "zoom out and back" on capture. We do
+    // this here (in the constructor, well before show()) rather than in
+    // applyShieldLevel() — that runs after show(), too late to suppress the appear
+    // animation. winId() forces native NSWindow creation so the hook can reach it.
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+    extern void OverlayWindow_disableShowAnimation(WId win);  // implemented in MacNative.mm
+    OverlayWindow_disableShowAnimation(winId());
+#endif
 }
 
 OverlayWindow::~OverlayWindow() = default;
@@ -260,18 +286,36 @@ std::optional<int> OverlayWindow::textAnnotationIndex(const QPointF& p) const {
 // Rendering (Spec 3 §4) — strict paint order
 // ============================================================================
 
-void OverlayWindow::paintEvent(QPaintEvent*) {
+void OverlayWindow::paintEvent(QPaintEvent* event) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
-    // Blit the cached upright backdrop instead of re-rendering the full QImage
-    // (with its orientation transform) every frame — pixmap blits are GPU-fast,
-    // which is what keeps selection-drag smooth.
-    ensureBackdrop();
-    p.drawPixmap(rect(), m_backdrop);
+    // Respect the damaged region. During a drag the dirty rect is a small band
+    // around the selection/annotation, so clip every draw op to it and — crucially
+    // — blit only the matching sub-rectangle of the cached Retina backdrop instead
+    // of the whole screenshot. This is what makes the per-move repaint cost scale
+    // with the gesture size, not the screen size. On a full repaint (press /
+    // release / tool change) the damage is the whole widget, so nothing shrinks.
+    const QRect damage = event->rect();
+    p.setClipRect(damage);
 
+    // Blit the cached upright backdrop instead of re-rendering the full QImage
+    // (with its orientation transform) every frame — pixmap blits are GPU-fast.
+    // Map the logical damage rect into backdrop device pixels (the pixmap carries
+    // the dpr) and blit just that sub-rect to its matching destination.
+    ensureBackdrop();
+    if (!m_backdrop.isNull()) {
+        const qreal dpr = m_backdrop.devicePixelRatio();
+        QRectF srcPx(damage.x() * dpr, damage.y() * dpr,
+                     damage.width() * dpr, damage.height() * dpr);
+        p.drawPixmap(QRectF(damage), m_backdrop, srcPx);
+    }
+
+    // drawDim already builds an even-odd path covering rect() with the selection
+    // hole; the clip rect restricts the fill to the damaged band, so re-dimming a
+    // small vacated area is cheap (no full-screen alpha fill).
     drawDim(p);
     for (int i = 0; i < m_annotations.size(); ++i) {
         if (i == m_editingIndex) continue;   // hide the one being edited inline
@@ -306,6 +350,113 @@ void OverlayWindow::ensureBackdrop() {
     drawImageUpright(pp, m_screenshot, QRectF(QPointF(0, 0), QSizeF(logical)));
     pp.end();
     m_backdrop = pm;
+}
+
+// ----- Dirty-rect drag optimization ----------------------------------------
+//
+// currentDragBounds() returns the logical-pixel bounding rect of EVERYTHING the
+// active gesture currently paints (geometry + its chrome), padded so handles,
+// borders, the size label and the dashed text frame are all covered. The caller
+// (updateDragRegion) unions this with the previous frame's bounds so the band
+// the gesture vacated is re-dimmed too. Returns a null QRect when no rect/text
+// gesture is in flight (caller then does a full update()).
+QRect OverlayWindow::currentDragBounds() const {
+    switch (m_dragMode) {
+    case DragMode::NewSelection:
+    case DragMode::MoveSelection:
+    case DragMode::Resize: {
+        if (!m_selection) return QRect();
+        QRectF r = *m_selection;
+        // Pad for the 1px border + the 9px handles centered on the edges (~5px
+        // overhang). The "W × H" size label sits ~22px above the top-left and is
+        // left-anchored, so for a narrow selection it extends well past the right
+        // edge — reserve a worst-case label band on the top and right. When the
+        // label has no room above it is drawn just BELOW the top edge instead
+        // (drawSelectionChrome), so reserve the band on the top INSIDE too via the
+        // top pad covering both placements. All cheap vs. a full-screen repaint.
+        const qreal padSide  = kHandleSize;     // handle overhang + border
+        const qreal padTop   = 28;              // size-label band above the top
+        const qreal labelMax = 160;             // worst-case "9999 × 9999" + bg pad
+        r = r.adjusted(-padSide, -padTop,
+                       std::max(padSide, labelMax - r.width()), padSide);
+        return r.toAlignedRect();
+    }
+    case DragMode::Draw: {
+        if (!m_current) return QRect();
+        const Annotation& a = *m_current;
+        QRectF r;
+        if (a.tool == Tool::Pen && !a.points.isEmpty()) {
+            r = QRectF(a.points.first(), a.points.first());
+            for (const QPointF& pt : a.points) {
+                r.setLeft(std::min(r.left(), pt.x()));
+                r.setTop(std::min(r.top(), pt.y()));
+                r.setRight(std::max(r.right(), pt.x()));
+                r.setBottom(std::max(r.bottom(), pt.y()));
+            }
+        } else {
+            r = rectFrom(a.start, a.end);
+        }
+        // Pad for stroke half-width and (for arrows) the arrowhead wings, which
+        // overshoot the end point by up to max(12, width*4).
+        const qreal head = std::max<qreal>(12, a.lineWidth * 4);
+        const qreal pad = std::max(a.lineWidth, head) + 2;
+        return r.adjusted(-pad, -pad, pad, pad).toAlignedRect();
+    }
+    case DragMode::MoveText:
+    case DragMode::ResizeText:
+    case DragMode::RotateText: {
+        if (!m_activeTextIndex || *m_activeTextIndex >= m_annotations.size())
+            return QRect();
+        const Annotation& a = m_annotations[*m_activeTextIndex];
+        // Local (unrotated) rect padded for the dashed frame (3px) + the 18px
+        // resize/rotate handle circles that hang off the top-right/bottom-right.
+        const QRectF local = textLocalRect(a).adjusted(-12, -12, 12, 12);
+        // Transform all four corners through the rotation so a rotated text's
+        // axis-aligned screen bounds are captured.
+        const QPointF c[4] = {
+            screenPoint(local.topLeft(),     a),
+            screenPoint(local.topRight(),    a),
+            screenPoint(local.bottomRight(), a),
+            screenPoint(local.bottomLeft(),  a),
+        };
+        qreal minX = c[0].x(), minY = c[0].y(), maxX = c[0].x(), maxY = c[0].y();
+        for (int i = 1; i < 4; ++i) {
+            minX = std::min(minX, c[i].x()); maxX = std::max(maxX, c[i].x());
+            minY = std::min(minY, c[i].y()); maxY = std::max(maxY, c[i].y());
+        }
+        QRect r = QRectF(minX, minY, maxX - minX, maxY - minY).toAlignedRect();
+        // Snap guides (drawn while moving text) span the WHOLE selection rect, so
+        // when one is active include the selection so the guide line is painted /
+        // erased in the same damaged band.
+        if ((m_snapGuideV || m_snapGuideH) && m_selection)
+            r = r.united(m_selection->toAlignedRect().adjusted(-1, -1, 1, 1));
+        return r;
+    }
+    default:
+        return QRect();
+    }
+}
+
+void OverlayWindow::updateDragRegion() {
+    const QRect now = currentDragBounds();
+    if (now.isNull() || !now.isValid()) {
+        // No tight bounds available for this gesture -> repaint everything.
+        m_lastPaintedDirty = QRect();
+        update();
+        return;
+    }
+    // Damage the union of where the gesture was last frame and where it is now,
+    // so the band it just vacated gets re-dimmed. Both rects already carry their
+    // chrome padding. Intersect with the widget so we never enqueue off-screen
+    // damage. +1/+1 guards against fractional-edge antialiasing seams.
+    QRect dirty = now;
+    if (!m_lastPaintedDirty.isNull())
+        dirty = dirty.united(m_lastPaintedDirty);
+    dirty.adjust(-1, -1, 1, 1);
+    dirty &= rect();
+    m_lastPaintedDirty = now;
+    if (!dirty.isEmpty())
+        update(dirty);
 }
 
 void OverlayWindow::drawImageUpright(QPainter& p, const QImage& img, const QRectF& rect) {
@@ -723,6 +874,10 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
     if (e->button() != Qt::LeftButton) { QWidget::mousePressEvent(e); return; }
     const QPointF p = e->position();
     m_dragStart = p;
+    // Start a fresh dirty-rect cache for this gesture. Where a drag begins from
+    // existing geometry (resize / move selection / move existing text) we seed it
+    // below with the pre-drag bounds so the FIRST move erases the old position.
+    m_lastPaintedDirty = QRect();
 
     // A press that REACHES the overlay while editing text commits that text and is
     // CONSUMED — we do NOT also start a new text / selection in the same press.
@@ -742,6 +897,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
                 m_selectionAtDragStart = sel;
                 setCursor(resizeCursorFor(*h));
                 beginCustomCursorDrag();
+                m_lastPaintedDirty = currentDragBounds();   // seed: erase old pos on 1st move
                 return;
             }
             if (sel.contains(p)) {
@@ -749,6 +905,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
                 m_selectionAtDragStart = sel;
                 setCursor(Qt::ClosedHandCursor);   // grabbed the selection
                 beginCustomCursorDrag();
+                m_lastPaintedDirty = currentDragBounds();   // seed: erase old pos on 1st move
                 return;
             }
             // Click outside -> begin a new selection.
@@ -799,6 +956,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
                     setCursor(Qt::ClosedHandCursor);
                     beginCustomCursorDrag();
                     updateTextInspector();
+                    m_lastPaintedDirty = currentDragBounds();   // seed for 1st move
                     update();
                     return;
                 }
@@ -826,6 +984,11 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
         m_dragMode = DragMode::NewSelection;
         emit beganSelection();
     }
+    // Seed the dirty-rect cache with the gesture's pre-move bounds (null for a
+    // brand-new selection that has no rect yet) so the first mouseMove erases the
+    // gesture's prior on-screen position. The full update() below then paints the
+    // whole widget once; subsequent moves shrink to the dirty band.
+    m_lastPaintedDirty = currentDragBounds();
     update();
 }
 
@@ -919,10 +1082,15 @@ void OverlayWindow::mouseMoveEvent(QMouseEvent* e) {
         confineCursorToScreen();
     }
 
-    // Toolbar follows the selection while it moves/resizes.
+    // Toolbar follows the selection while it moves/resizes. The toolbar is a
+    // child widget, so moving it schedules its OWN repaint independently of the
+    // overlay's damaged region — we do not need to include it in the dirty rect.
     if (m_toolbar && m_selection) positionToolbar(*m_selection);
 
-    update();
+    // Per-move repaint: damage only the union of the gesture's previous and
+    // current bounds instead of the whole Retina screen. Falls back to a full
+    // update() when the gesture has no tight bounds (handled inside).
+    updateDragRegion();
 }
 
 // ============================================================================
@@ -949,6 +1117,7 @@ void OverlayWindow::mouseReleaseEvent(QMouseEvent* e) {
     }
     m_dragMode = DragMode::None;
     m_snapGuideV = false; m_snapGuideH = false;
+    m_lastPaintedDirty = QRect();   // gesture over: drop the dirty-rect cache
 
     if (m_selection && m_selection->width() > 4 && m_selection->height() > 4) {
         showToolbar(*m_selection);

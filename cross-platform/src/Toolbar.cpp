@@ -111,161 +111,191 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
     p.setPen(stroke);
     p.setBrush(Qt::NoBrush);
 
+    // Button-centered coordinate helpers: bx/by map a fraction (0..1) of the WHOLE
+    // button (side), centered. The tool/action glyphs below are redrawn to match
+    // the native macOS SF-symbol toolbar 1:1; several native glyphs (rectangle,
+    // doc.on.doc, uturn, save) have footprints larger than the 0.48-wide default
+    // `box`, so they are laid out in these button-fraction coords instead. Each
+    // glyph's footprint was measured against a render of the real SF symbols at
+    // the same scale and tuned to the same width/height/center.
+    const qreal cxB = side * 0.5, cyB = side * 0.5;
+    auto bx = [&](qreal f) { return cxB + (f - 0.5) * side; };
+    auto by = [&](qreal f) { return cyB + (f - 0.5) * side; };
+
     if (symbol == "cursorarrow") {
-        // Pointer arrow (filled triangle with tail).
+        // Native cursorarrow: a FILLED slim pointer (~0.29w x 0.52h of the button),
+        // centered. Hotspot tip up-top, a deep notch, and a thin tail prong angling
+        // down-right. Rounded vertices via a same-color round-join stroke.
         QPainterPath path;
-        path.moveTo(px(0.20), py(0.05));
-        path.lineTo(px(0.20), py(0.85));
-        path.lineTo(px(0.42), py(0.62));
-        path.lineTo(px(0.55), py(0.95));
-        path.lineTo(px(0.68), py(0.88));
-        path.lineTo(px(0.55), py(0.56));
-        path.lineTo(px(0.85), py(0.50));
+        path.moveTo(bx(0.375), by(0.255));  // hotspot tip (top)
+        path.lineTo(bx(0.375), by(0.685));  // down the leading edge
+        path.lineTo(bx(0.455), by(0.605));  // in to the deep notch base
+        path.lineTo(bx(0.520), by(0.760));  // down-right to the tail foot (long prong)
+        path.lineTo(bx(0.565), by(0.740));  // tail foot (outer, thin)
+        path.lineTo(bx(0.508), by(0.580));  // back up the inner tail edge to notch
+        path.lineTo(bx(0.600), by(0.545));  // out to the trailing shoulder
         path.closeSubpath();
-        p.setPen(QPen(tint, side * 0.036, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setPen(QPen(tint, side * 0.055, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.setBrush(tint);
         p.drawPath(path);
     } else if (symbol == "arrow.up.right") {
-        // Clean diagonal arrow: a shaft from bottom-left to a tip near top-right,
-        // capped with a FILLED triangular arrowhead (so it reads as an arrow, not
-        // an open bracket, and is clearly distinct from the plain Line tool).
-        const QPointF tail(px(0.12), py(0.88));
-        const QPointF tip(px(0.84), py(0.16));
-        // Shaft stops a touch short of the tip so the filled head sits on the end.
-        const qreal t = 0.74;
-        const QPointF shaftEnd(tail.x() + (tip.x() - tail.x()) * t,
-                               tail.y() + (tip.y() - tail.y()) * t);
-        p.drawLine(tail, shaftEnd);
-
-        const qreal ang = std::atan2(tip.y() - tail.y(), tip.x() - tail.x());
-        const qreal headLen = w * 0.34;
-        const qreal spread  = M_PI / 7.0;
-        const QPointF h1(tip.x() - headLen * std::cos(ang - spread),
-                         tip.y() - headLen * std::sin(ang - spread));
-        const QPointF h2(tip.x() - headLen * std::cos(ang + spread),
-                         tip.y() - headLen * std::sin(ang + spread));
-        QPainterPath head(tip);
-        head.lineTo(h1);
-        head.lineTo(h2);
-        head.closeSubpath();
-        p.setPen(QPen(tint, side * 0.036, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        p.setBrush(tint);
-        p.drawPath(head);
+        // Native: a thin shaft from bottom-left to top-right capped with a small
+        // OPEN chevron head (two strokes), NOT a filled triangle — distinct from
+        // the plain Line tool. Round caps. Footprint ~0.38 square.
+        const QPointF tail(bx(0.32), by(0.68));
+        const QPointF tip(bx(0.68), by(0.32));
+        p.drawLine(tail, tip);
+        const qreal armLen = side * 0.20;
+        p.drawLine(tip, QPointF(tip.x() - armLen, tip.y()));   // arm to the left
+        p.drawLine(tip, QPointF(tip.x(), tip.y() + armLen));   // arm downward
     } else if (symbol == "line.diagonal") {
-        p.drawLine(QPointF(px(0.08), py(0.92)), QPointF(px(0.92), py(0.08)));
+        // Native footprint ~0.41.
+        p.drawLine(QPointF(bx(0.295), by(0.705)), QPointF(bx(0.705), by(0.295)));
     } else if (symbol == "rectangle") {
-        p.drawRoundedRect(QRectF(px(0.05), py(0.15), w * 0.90, h * 0.70), 2, 2);
+        // Native: landscape rounded outline ~0.57w x 0.44h, moderate corner radius.
+        const QRectF r(bx(0.215), by(0.28), side * 0.57, side * 0.44);
+        const qreal rad = side * 0.075;
+        p.drawRoundedRect(r, rad, rad);
     } else if (symbol == "rectangle.fill") {
+        const QRectF r(bx(0.215), by(0.28), side * 0.57, side * 0.44);
+        const qreal rad = side * 0.075;
         p.setBrush(tint);
-        p.drawRoundedRect(QRectF(px(0.05), py(0.15), w * 0.90, h * 0.70), 2, 2);
+        p.setPen(QPen(tint, side * 0.03, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawRoundedRect(r, rad, rad);
     } else if (symbol == "pencil.tip") {
-        // A recognizable PENCIL drawn diagonally (sharp tip at bottom-left, flat
-        // eraser end at top-right). Built from a slanted barrel (parallelogram),
-        // a filled triangular wooden tip, and a short flat cap at the eraser end.
-        //
-        // Barrel direction (unit) and a perpendicular for the barrel half-width.
-        const QPointF tipPt(px(0.16), py(0.84));   // sharpened point
-        const QPointF capPt(px(0.84), py(0.16));   // eraser end
-        const qreal dx = capPt.x() - tipPt.x(), dy = capPt.y() - tipPt.y();
-        const qreal len = std::hypot(dx, dy);
-        const qreal ux = dx / len, uy = dy / len;          // along barrel
-        const qreal nx = -uy, ny = ux;                     // perpendicular
-        const qreal halfW = w * 0.16;                      // barrel half-thickness
-
-        // Where the wooden tip ends and the painted barrel begins.
-        const qreal collar = len * 0.26;
-        const QPointF collarMid(tipPt.x() + ux * collar, tipPt.y() + uy * collar);
-        // Eraser end shortened a hair so the barrel doesn't run to the corner.
-        const QPointF endMid(capPt.x() - ux * (len * 0.04),
-                             capPt.y() - uy * (len * 0.04));
-
-        auto offset = [&](const QPointF& m, qreal s) {
-            return QPointF(m.x() + nx * s, m.y() + ny * s);
-        };
-
-        // Filled wooden tip: triangle from the sharp point to the two collar edges.
-        QPainterPath tip;
-        tip.moveTo(tipPt);
-        tip.lineTo(offset(collarMid,  halfW));
-        tip.lineTo(offset(collarMid, -halfW));
-        tip.closeSubpath();
-        p.setPen(QPen(tint, side * 0.036, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        // Native pencil.tip: an UPRIGHT "A"/easel shape, FILLED (~0.32w x 0.49h).
+        // A sharp triangular wood tip up top, a horizontal graphite collar ~mid,
+        // and two splayed legs angling down-and-out to rounded feet.
+        const qreal legW = side * 0.072;
+        const qreal collarYf = 0.555;                  // collar height (fraction)
+        const qreal sL = 0.42, sR = 0.58;              // tip shoulders (narrow tip)
+        QPainterPath tipTri;
+        tipTri.moveTo(bx(0.50), by(0.245));            // apex
+        tipTri.lineTo(bx(sR), by(collarYf));           // right shoulder
+        tipTri.lineTo(bx(sL), by(collarYf));           // left shoulder
+        tipTri.closeSubpath();
+        p.setPen(QPen(tint, side * 0.02, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.setBrush(tint);
-        p.drawPath(tip);
-
-        // Barrel: outlined parallelogram from the collar to the eraser end.
-        QPainterPath barrel;
-        barrel.moveTo(offset(collarMid,  halfW));
-        barrel.lineTo(offset(endMid,     halfW));
-        barrel.lineTo(offset(endMid,    -halfW));
-        barrel.lineTo(offset(collarMid, -halfW));
-        barrel.closeSubpath();
+        p.drawPath(tipTri);
+        QPen bar(tint, legW, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(bar);
+        p.drawLine(QPointF(bx(sL), by(collarYf)), QPointF(bx(sR), by(collarYf)));  // collar
+        p.drawLine(QPointF(bx(sL), by(collarYf)), QPointF(bx(0.355), by(0.755)));  // left leg
+        p.drawLine(QPointF(bx(sR), by(collarYf)), QPointF(bx(0.645), by(0.755)));  // right leg
+        p.setPen(stroke);
         p.setBrush(Qt::NoBrush);
-        p.drawPath(barrel);
-
-        // Eraser cap: a short stroke across the very end to suggest the ferrule.
-        p.drawLine(offset(endMid, halfW), offset(endMid, -halfW));
     } else if (symbol == "textformat") {
-        QFont f = p.font();
-        f.setPixelSize(int(h * 0.95));
-        f.setBold(true);
-        p.setFont(f);
+        // Native: "Aa" — a large cap A plus a smaller lowercase a (~0.59w x 0.38h),
+        // medium-weight. On macOS the default QFont is the system font (San
+        // Francisco), so this reads like the native symbol.
         p.setPen(tint);
-        p.drawText(box.adjusted(-side * 0.05, -side * 0.05, side * 0.05, side * 0.05),
-                   Qt::AlignCenter, QStringLiteral("A"));
+        const qreal baseline = by(0.69);
+        QFont fA = p.font();
+        fA.setPixelSize(int(side * 0.56));
+        fA.setWeight(QFont::Medium);
+        p.setFont(fA);
+        p.drawText(QPointF(bx(0.19), baseline), QStringLiteral("A"));
+        QFont fa = p.font();
+        fa.setPixelSize(int(side * 0.40));
+        p.setFont(fa);
+        p.drawText(QPointF(bx(0.58), baseline), QStringLiteral("a"));
     } else if (symbol == "arrow.uturn.backward" || symbol == "arrow.uturn.forward") {
-        // Clean 3/4-circle undo (CCW) / redo (CW) arrow with a filled arrowhead
-        // at the moving end, oriented along the arc's local travel direction.
-        // undo and redo are exact horizontal mirrors (start 305°/+250° vs
-        // 235°/-250°), so the pair reads symmetrically.
+        // Native u-turn (~0.49 square): a horizontal shaft at top with an OPEN
+        // chevron head on one side, curving down the far side into a half-loop that
+        // hooks back under. Build for "backward" (head left), mirror for "forward".
         const bool forward = (symbol == "arrow.uturn.forward");
-        const qreal cx = px(0.50), cy = py(0.52);
-        const qreal R  = w * 0.34;
-        const QRectF aRect(cx - R, cy - R, 2 * R, 2 * R);
-        const qreal startDeg = forward ? 235.0 : 305.0;
-        const qreal sweepDeg = forward ? -250.0 : 250.0;
-        QPainterPath arc;
-        arc.arcMoveTo(aRect, startDeg);
-        arc.arcTo(aRect, startDeg, sweepDeg);
-        p.drawPath(arc);
-        const QPointF a1 = arc.pointAtPercent(1.0);
-        const QPointF a0 = arc.pointAtPercent(0.92);
-        QPointF dir = a1 - a0;
-        const qreal dl = std::hypot(dir.x(), dir.y());
-        if (dl > 0) dir /= dl;
-        auto rot = [](QPointF v, qreal ang) {
-            return QPointF(v.x() * std::cos(ang) - v.y() * std::sin(ang),
-                           v.x() * std::sin(ang) + v.y() * std::cos(ang));
-        };
-        const qreal hl = w * 0.34, spread = 0.55;
-        const QPointF hb1 = a1 - rot(dir,  spread) * hl;
-        const QPointF hb2 = a1 - rot(dir, -spread) * hl;
-        QPainterPath head(a1);
-        head.lineTo(hb1);
-        head.lineTo(hb2);
-        head.closeSubpath();
-        p.setPen(QPen(tint, side * 0.036, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        p.setBrush(tint);
-        p.drawPath(head);
+        auto X = [&](qreal u) { return forward ? bx(1.0 - u) : bx(u); };
+        QPainterPath hook;
+        hook.moveTo(X(0.35), by(0.41));                       // shaft start (near head)
+        hook.lineTo(X(0.60), by(0.41));                       // shaft to the right
+        hook.cubicTo(X(0.75), by(0.41), X(0.75), by(0.70),    // round the far corner
+                     X(0.60), by(0.70));
+        hook.lineTo(X(0.52), by(0.70));                       // short tail under
+        QPen hp(tint, side * 0.066, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(hp);
+        p.drawPath(hook);
+        // Open chevron head at the shaft start, pointing out (left for backward).
+        const QPointF tip(X(0.27), by(0.41));
+        const qreal aw = side * 0.105;   // chevron arm reach (x)
+        const qreal ah = side * 0.125;   // chevron arm reach (y, taller = more open)
+        p.drawLine(tip, QPointF(X(0.27) + (forward ? -aw : aw), by(0.41) - ah));
+        p.drawLine(tip, QPointF(X(0.27) + (forward ? -aw : aw), by(0.41) + ah));
     } else if (symbol == "doc.on.doc") {
-        p.drawRoundedRect(QRectF(px(0.05), py(0.20), w * 0.55, h * 0.70), 2, 2);
-        p.drawRoundedRect(QRectF(px(0.40), py(0.05), w * 0.55, h * 0.70), 2, 2);
+        // Native: two overlapping doc outlines, each dog-eared top-right
+        // (~0.53w x 0.66h overall). Back doc upper-right, front doc lower-left,
+        // the front occluding the back (a transparent hole is punched so this is
+        // correct on any panel/highlight color).
+        const qreal dw = side * 0.33, dh = side * 0.43;
+        const qreal fold = dw * 0.36;                // dog-ear size
+        const qreal cr = side * 0.05;               // body corner radius
+        auto docPath = [&](qreal lf, qreal tf) {
+            const qreal L = bx(lf), T = by(tf);
+            const qreal R = L + dw, B = T + dh;
+            QPainterPath d;
+            d.moveTo(L + cr, T);
+            d.lineTo(R - fold, T);                   // top edge to the fold start
+            d.lineTo(R, T + fold);                   // diagonal cut to the right edge
+            d.lineTo(R, B - cr);
+            d.quadTo(R, B, R - cr, B);
+            d.lineTo(L + cr, B);
+            d.quadTo(L, B, L, B - cr);
+            d.lineTo(L, T + cr);
+            d.quadTo(L, T, L + cr, T);
+            return d;
+        };
+        auto creasePath = [&](qreal lf, qreal tf) {  // folded-corner flap (an L)
+            const qreal L = bx(lf), T = by(tf), R = L + dw;
+            QPainterPath c;
+            c.moveTo(R - fold, T);
+            c.lineTo(R - fold, T + fold);
+            c.lineTo(R, T + fold);
+            return c;
+        };
+        QPen dp(tint, side * 0.046, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(dp);
+        p.drawPath(docPath(0.42, 0.16));             // back doc (upper-right)
+        p.drawPath(creasePath(0.42, 0.16));
+        const QPainterPath front = docPath(0.225, 0.40);
+        p.save();                                    // punch a hole for the front doc
+        p.setCompositionMode(QPainter::CompositionMode_Clear);
+        p.setPen(Qt::NoPen);
+        p.setBrush(Qt::transparent);
+        p.drawPath(front);
+        p.restore();
+        p.setPen(dp);
+        p.drawPath(front);                           // front doc (lower-left) on top
+        p.drawPath(creasePath(0.225, 0.40));
     } else if (symbol == "square.and.arrow.down") {
-        p.drawLine(QPointF(px(0.50), py(0.05)), QPointF(px(0.50), py(0.60)));
-        QPainterPath head;
-        head.moveTo(px(0.30), py(0.40));
-        head.lineTo(px(0.50), py(0.62));
-        head.lineTo(px(0.70), py(0.40));
-        p.drawPath(head);
+        // Native (~0.46w x 0.56h): a rounded open-top "tray" in the lower portion
+        // with a down-arrow (shaft + open chevron) descending into it through a gap
+        // in the tray's top edge.
+        QPen sp(tint, side * 0.058, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(sp);
+        const qreal L = bx(0.28), R = bx(0.72), T = by(0.46), B = by(0.78);
+        const qreal rad = side * 0.095;
+        const qreal gapL = bx(0.435), gapR = bx(0.565);
         QPainterPath tray;
-        tray.moveTo(px(0.10), py(0.55));
-        tray.lineTo(px(0.10), py(0.92));
-        tray.lineTo(px(0.90), py(0.92));
-        tray.lineTo(px(0.90), py(0.55));
+        tray.moveTo(gapL, T);
+        tray.lineTo(L + rad, T);
+        tray.quadTo(L, T, L, T + rad);
+        tray.lineTo(L, B - rad);
+        tray.quadTo(L, B, L + rad, B);
+        tray.lineTo(R - rad, B);
+        tray.quadTo(R, B, R, B - rad);
+        tray.lineTo(R, T + rad);
+        tray.quadTo(R, T, R - rad, T);
+        tray.lineTo(gapR, T);
         p.drawPath(tray);
+        p.drawLine(QPointF(bx(0.50), by(0.26)), QPointF(bx(0.50), by(0.585)));  // shaft
+        QPainterPath head;
+        head.moveTo(bx(0.41), by(0.485));
+        head.lineTo(bx(0.50), by(0.60));
+        head.lineTo(bx(0.59), by(0.485));
+        p.drawPath(head);
     } else if (symbol == "xmark") {
-        p.drawLine(QPointF(px(0.12), py(0.12)), QPointF(px(0.88), py(0.88)));
-        p.drawLine(QPointF(px(0.88), py(0.12)), QPointF(px(0.12), py(0.88)));
+        // Native footprint ~0.41 square.
+        p.drawLine(QPointF(bx(0.295), by(0.295)), QPointF(bx(0.705), by(0.705)));
+        p.drawLine(QPointF(bx(0.705), by(0.295)), QPointF(bx(0.295), by(0.705)));
     } else if (symbol == "checkmark") {
         p.drawPolyline(QPolygonF({ QPointF(px(0.12), py(0.55)),
                                    QPointF(px(0.42), py(0.85)),
