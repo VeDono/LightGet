@@ -93,9 +93,11 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    // Glyph drawing area: a centered square inset from the icon canvas. 0.20 makes
-    // the glyph fill ~0.6 of the canvas, matching the native toolbar's glyph size.
-    const qreal inset = side * 0.20;
+    // Glyph drawing area: a centered square inset from the icon canvas. Tuned to
+    // match the native SF-symbol toolbar: native glyphs measure ~12-16px in a 30px
+    // button (avg ~0.45 fill) with thin strokes. inset 0.26 → glyph 28*0.48 ≈
+    // 13.4px, i.e. ~0.45 of the button — same visual size as native.
+    const qreal inset = side * 0.26;
     const QRectF box(inset, inset, side - 2 * inset, side - 2 * inset);
     const qreal w = box.width(), h = box.height();
     const qreal x0 = box.left(), y0 = box.top();
@@ -103,7 +105,7 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
     auto py = [&](qreal v) { return y0 + v * h; };  // v in 0..1 (top-down)
 
     QPen stroke(tint);
-    stroke.setWidthF(side * 0.072);
+    stroke.setWidthF(side * 0.058);   // thin, matching the native SF-symbol weight
     stroke.setCapStyle(Qt::RoundCap);
     stroke.setJoinStyle(Qt::RoundJoin);
     p.setPen(stroke);
@@ -120,7 +122,7 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
         path.lineTo(px(0.55), py(0.56));
         path.lineTo(px(0.85), py(0.50));
         path.closeSubpath();
-        p.setPen(QPen(tint, side * 0.045, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setPen(QPen(tint, side * 0.036, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.setBrush(tint);
         p.drawPath(path);
     } else if (symbol == "arrow.up.right") {
@@ -146,7 +148,7 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
         head.lineTo(h1);
         head.lineTo(h2);
         head.closeSubpath();
-        p.setPen(QPen(tint, side * 0.045, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setPen(QPen(tint, side * 0.036, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.setBrush(tint);
         p.drawPath(head);
     } else if (symbol == "line.diagonal") {
@@ -187,7 +189,7 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
         tip.lineTo(offset(collarMid,  halfW));
         tip.lineTo(offset(collarMid, -halfW));
         tip.closeSubpath();
-        p.setPen(QPen(tint, side * 0.045, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setPen(QPen(tint, side * 0.036, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.setBrush(tint);
         p.drawPath(tip);
 
@@ -242,7 +244,7 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
         head.lineTo(hb1);
         head.lineTo(hb2);
         head.closeSubpath();
-        p.setPen(QPen(tint, side * 0.045, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setPen(QPen(tint, side * 0.036, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.setBrush(tint);
         p.drawPath(head);
     } else if (symbol == "doc.on.doc") {

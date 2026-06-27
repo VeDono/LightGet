@@ -84,11 +84,11 @@ private:
     void buildButtons();                        // layout algorithm (Spec 4 §2.4)
 
     static constexpr int kButtonSize = 30;
-    // Glyph icon canvas, a touch smaller than the button. Sized to match the
-    // native toolbar glyph fill (~0.56 of the button): with makeGlyph's 0.20 inset
-    // the visible glyph is 28*0.6 = 16.8px. The 2px button margin + the glyph's own
-    // transparent inset keep the click pop (scale 1.10) from clipping the glyph;
-    // the selected highlight is drawn inset in PopButton::paintEvent (task 1).
+    // Glyph icon canvas. The visible glyph size is set by makeGlyph's 0.26 inset
+    // (glyph ≈ 28*0.48 ≈ 13.4px), tuned to match the native SF-symbol toolbar
+    // (native glyphs are ~12-16px in a 30px button with thin strokes). The button
+    // margin + the glyph's transparent inset keep the click pop (1.10x) from
+    // clipping; the selected highlight is drawn inset in PopButton::paintEvent.
     static constexpr int kIconSize = 28;
     static constexpr int kPad = 6;
 
