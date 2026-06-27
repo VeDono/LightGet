@@ -123,11 +123,30 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
         p.setBrush(tint);
         p.drawPath(path);
     } else if (symbol == "arrow.up.right") {
-        p.drawLine(QPointF(px(0.10), py(0.90)), QPointF(px(0.90), py(0.10)));
-        QPainterPath head;
-        head.moveTo(px(0.45), py(0.10));
-        head.lineTo(px(0.90), py(0.10));
-        head.lineTo(px(0.90), py(0.55));
+        // Clean diagonal arrow: a shaft from bottom-left to a tip near top-right,
+        // capped with a FILLED triangular arrowhead (so it reads as an arrow, not
+        // an open bracket, and is clearly distinct from the plain Line tool).
+        const QPointF tail(px(0.12), py(0.88));
+        const QPointF tip(px(0.84), py(0.16));
+        // Shaft stops a touch short of the tip so the filled head sits on the end.
+        const qreal t = 0.74;
+        const QPointF shaftEnd(tail.x() + (tip.x() - tail.x()) * t,
+                               tail.y() + (tip.y() - tail.y()) * t);
+        p.drawLine(tail, shaftEnd);
+
+        const qreal ang = std::atan2(tip.y() - tail.y(), tip.x() - tail.x());
+        const qreal headLen = w * 0.34;
+        const qreal spread  = M_PI / 7.0;
+        const QPointF h1(tip.x() - headLen * std::cos(ang - spread),
+                         tip.y() - headLen * std::sin(ang - spread));
+        const QPointF h2(tip.x() - headLen * std::cos(ang + spread),
+                         tip.y() - headLen * std::sin(ang + spread));
+        QPainterPath head(tip);
+        head.lineTo(h1);
+        head.lineTo(h2);
+        head.closeSubpath();
+        p.setPen(QPen(tint, side * 0.045, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(tint);
         p.drawPath(head);
     } else if (symbol == "line.diagonal") {
         p.drawLine(QPointF(px(0.08), py(0.92)), QPointF(px(0.92), py(0.08)));
@@ -137,15 +156,52 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
         p.setBrush(tint);
         p.drawRoundedRect(QRectF(px(0.05), py(0.15), w * 0.90, h * 0.70), 2, 2);
     } else if (symbol == "pencil.tip") {
-        // Pencil body + tip.
-        p.drawLine(QPointF(px(0.25), py(0.78)), QPointF(px(0.78), py(0.25)));
+        // A recognizable PENCIL drawn diagonally (sharp tip at bottom-left, flat
+        // eraser end at top-right). Built from a slanted barrel (parallelogram),
+        // a filled triangular wooden tip, and a short flat cap at the eraser end.
+        //
+        // Barrel direction (unit) and a perpendicular for the barrel half-width.
+        const QPointF tipPt(px(0.16), py(0.84));   // sharpened point
+        const QPointF capPt(px(0.84), py(0.16));   // eraser end
+        const qreal dx = capPt.x() - tipPt.x(), dy = capPt.y() - tipPt.y();
+        const qreal len = std::hypot(dx, dy);
+        const qreal ux = dx / len, uy = dy / len;          // along barrel
+        const qreal nx = -uy, ny = ux;                     // perpendicular
+        const qreal halfW = w * 0.16;                      // barrel half-thickness
+
+        // Where the wooden tip ends and the painted barrel begins.
+        const qreal collar = len * 0.26;
+        const QPointF collarMid(tipPt.x() + ux * collar, tipPt.y() + uy * collar);
+        // Eraser end shortened a hair so the barrel doesn't run to the corner.
+        const QPointF endMid(capPt.x() - ux * (len * 0.04),
+                             capPt.y() - uy * (len * 0.04));
+
+        auto offset = [&](const QPointF& m, qreal s) {
+            return QPointF(m.x() + nx * s, m.y() + ny * s);
+        };
+
+        // Filled wooden tip: triangle from the sharp point to the two collar edges.
         QPainterPath tip;
-        tip.moveTo(px(0.10), py(0.92));
-        tip.lineTo(px(0.30), py(0.83));
-        tip.lineTo(px(0.18), py(0.70));
+        tip.moveTo(tipPt);
+        tip.lineTo(offset(collarMid,  halfW));
+        tip.lineTo(offset(collarMid, -halfW));
         tip.closeSubpath();
+        p.setPen(QPen(tint, side * 0.045, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.setBrush(tint);
         p.drawPath(tip);
+
+        // Barrel: outlined parallelogram from the collar to the eraser end.
+        QPainterPath barrel;
+        barrel.moveTo(offset(collarMid,  halfW));
+        barrel.lineTo(offset(endMid,     halfW));
+        barrel.lineTo(offset(endMid,    -halfW));
+        barrel.lineTo(offset(collarMid, -halfW));
+        barrel.closeSubpath();
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(barrel);
+
+        // Eraser cap: a short stroke across the very end to suggest the ferrule.
+        p.drawLine(offset(endMid, halfW), offset(endMid, -halfW));
     } else if (symbol == "textformat") {
         QFont f = p.font();
         f.setPixelSize(int(h * 0.95));

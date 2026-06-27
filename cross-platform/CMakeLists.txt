@@ -136,6 +136,24 @@ elseif(APPLE)
     endif()
 
     # -----------------------------------------------------------------------
+    # Native macOS pieces (ENABLED): CGShieldingWindowLevel overlay (so the
+    # selection can cover the menu bar), force-cursor-visible, and frontmost-app
+    # record/restore. Implemented in src/mac/MacNative.mm (Objective-C++ / ARC).
+    # Enabling HAVE_MAC_NATIVE activates every guarded call site, so this .mm MUST
+    # define all four externs or the link fails.
+    # -----------------------------------------------------------------------
+    target_sources(LightGet PRIVATE src/mac/MacNative.mm)
+    set_source_files_properties(src/mac/MacNative.mm PROPERTIES
+        COMPILE_OPTIONS "-fobjc-arc")
+    target_compile_definitions(LightGet PRIVATE HAVE_MAC_NATIVE=1)
+    # Cocoa (already linked above) re-exports AppKit; add AppKit explicitly for
+    # clarity. CoreGraphics is already linked. ApplicationServices covers the
+    # CGShieldingWindowLevel / CGDisplay* calls.
+    find_library(APPKIT_LIB AppKit)
+    find_library(APPSERVICES_LIB ApplicationServices)
+    target_link_libraries(LightGet PRIVATE ${APPKIT_LIB} ${APPSERVICES_LIB})
+
+    # -----------------------------------------------------------------------
     # Faithful native macOS pieces (OPT-IN; HAVE_MAC_NATIVE is undefined here).
     #
     # By default this is a plain pure-Qt build: the overlay is a normal topmost

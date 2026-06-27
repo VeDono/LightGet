@@ -373,21 +373,28 @@ void OverlayWindow::drawTextAnnotation(QPainter& p, const Annotation& a) {
         p.fillRect(textLocalRect(a).adjusted(-3, -2, 3, 2), *a.bgColor);
     }
 
-    const qreal boxW = textSize(a).width();
+    // Lay every line out inside the SAME box width so left/center/right are
+    // visibly different. The box width is the widest line's advance (textSize),
+    // clamped to be >= each line so no line is ever clipped. We align each line
+    // explicitly via QTextOption + a per-line rect spanning the full box width;
+    // this is the canonical path (the previous manual dx math silently produced
+    // no visible offset whenever boxW happened to equal the measured line width).
+    qreal boxW = textSize(a).width();
+    for (const QString& str : lines)
+        boxW = std::max(boxW, fm.horizontalAdvance(str));
+
+    const Qt::Alignment hAlign = toQtAlignment(a.alignment);
+    QTextOption opt(hAlign | Qt::AlignTop);
+    opt.setWrapMode(QTextOption::NoWrap);
+
     p.setFont(font);
     p.setPen(a.color);
     for (int i = 0; i < lines.size(); ++i) {
-        const QString& str = lines[i];
-        const qreal lineW = fm.horizontalAdvance(str);
-        qreal dx = 0;
-        switch (a.alignment) {
-        case TextAlign::Center: dx = (boxW - lineW) / 2.0; break;
-        case TextAlign::Right:  dx = boxW - lineW; break;
-        case TextAlign::Left:   dx = 0; break;
-        }
-        // Baseline at start.y + ascent + i*lineHeight (matches Swift CTLine math).
-        const qreal baseline = a.start.y() + fm.ascent() + i * lineHeight;
-        p.drawText(QPointF(a.start.x() + dx, baseline), str);
+        // Each line occupies a full-box-width rect; QPainter aligns the glyphs
+        // within it according to hAlign (left/center/right).
+        const qreal top = a.start.y() + i * lineHeight;
+        const QRectF lineRect(a.start.x(), top, boxW, lineHeight);
+        p.drawText(lineRect, lines[i], opt);
     }
     p.restore();
 }
@@ -1214,9 +1221,19 @@ void OverlayWindow::updateAlignmentHighlight() {
 void OverlayWindow::setTextAlignment(TextAlign a) {
     m_currentTextAlignment = a;
     updateAlignmentHighlight();
-    if (!m_textEditor) return;
-    applyAlignmentToEditor(a);
-    update();
+    if (m_textEditor) {
+        // Live editing: push the alignment into the inline editor.
+        applyAlignmentToEditor(a);
+        update();
+        return;
+    }
+    // Not editing but a committed text is selected -> apply directly to it so
+    // the alignment control is not a no-op outside edit mode.
+    if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size() &&
+        m_annotations[*m_activeTextIndex].tool == Tool::Text) {
+        m_annotations[*m_activeTextIndex].alignment = a;
+        update();
+    }
 }
 
 void OverlayWindow::applyAlignmentToEditor(TextAlign a) {
@@ -1440,17 +1457,45 @@ void OverlayWindow::saveToFile() {
     }
 
     // No folder set -> file dialog with the default macOS-style name.
-    // CRITICAL: tear down the shield overlay first so the dialog is visible.
     const QString suggested = QDir(QStandardPaths::writableLocation(
                                       QStandardPaths::PicturesLocation))
                                   .filePath(defaultScreenshotName());
+
+    // Remember the capture screen BEFORE tearing down the overlay, so we can put
+    // the save dialog on the SAME monitor the selection was made on. Falls back
+    // to this widget's current screen, then the primary screen.
+    QScreen* captureScreen = m_screen;
+    if (!captureScreen) captureScreen = screen();
+    if (!captureScreen) captureScreen = QGuiApplication::primaryScreen();
+
+    // CRITICAL: tear down the shield overlay first so the dialog is visible.
     finish();
 
-    const QString path = QFileDialog::getSaveFileName(
-        nullptr, Loc::t("save.title"), suggested, "PNG Image (*.png)");
-    if (!path.isEmpty()) {
-        img.save(path, "PNG");
-        writeToClipboard(img);
+    // Build an explicit dialog (not the static helper) so we can place it on the
+    // capture screen before showing it. Keeps the PNG filter + default name.
+    QFileDialog dialog(nullptr, Loc::t("save.title"), suggested, "PNG Image (*.png)");
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setDefaultSuffix("png");
+    if (captureScreen) {
+        // Anchor the dialog to the target screen, then re-center it there once it
+        // has a real size. setScreen alone is not enough on macOS (the native
+        // panel still opens on the screen with the key window), so we also move
+        // the dialog's frame to that screen's center.
+        dialog.setScreen(captureScreen);
+        dialog.ensurePolished();
+        QSize sz = dialog.sizeHint();
+        if (sz.isEmpty()) sz = QSize(700, 500);
+        const QRect g = captureScreen->geometry();
+        dialog.move(g.x() + (g.width() - sz.width()) / 2,
+                    g.y() + (g.height() - sz.height()) / 2);
+    }
+
+    if (dialog.exec() == QDialog::Accepted) {
+        const QStringList files = dialog.selectedFiles();
+        if (!files.isEmpty() && !files.first().isEmpty()) {
+            img.save(files.first(), "PNG");
+            writeToClipboard(img);
+        }
     }
 }
 

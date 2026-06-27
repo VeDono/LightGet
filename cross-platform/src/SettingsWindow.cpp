@@ -26,6 +26,7 @@
 #include <QComboBox>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QGroupBox>
 #include <QSlider>
 #include <QFrame>
 #include <QFileDialog>
@@ -280,10 +281,12 @@ uint32_t HotkeyRecorder::carbonKeyCode(int qtKey, quint32 nativeVK) {
 // ===========================================================================
 
 SettingsWindow::SettingsWindow(QWidget* parent) : QDialog(parent) {
-    // Fixed-size 440x580, not resizable, persists across open/close (the owner
-    // keeps the instance alive). Title bar with close only.
+    // Fixed-size window, not resizable, persists across open/close (the owner
+    // keeps the instance alive). Title bar with close only. Size bumped a little
+    // (was 440x580) to give the grouped sections breathing room so nothing is
+    // cramped or clipped; a minimum width keeps labels/controls comfortable.
     setWindowFlags(Qt::Window | Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
-    setFixedSize(440, 580);
+    setFixedSize(460, 620);
 
     m_recorder = new HotkeyRecorder(this);   // reused member across rebuilds
     connect(m_recorder, &HotkeyRecorder::captured, this,
@@ -346,14 +349,21 @@ QWidget* SettingsWindow::buildGeneralTab() {
 
     auto* tab = new QWidget;
     auto* outer = new QVBoxLayout(tab);
-    outer->setContentsMargins(20, 14, 20, 14);
-    outer->setSpacing(8);
+    outer->setContentsMargins(20, 16, 20, 16);
+    outer->setSpacing(12);
 
-    auto* form = new QFormLayout;
-    form->setLabelAlignment(Qt::AlignLeft);
+    // The settings rows live inside a titled group box so labels/controls are
+    // visually framed and right-aligned consistently, rather than floating loose
+    // against the tab edge.
+    auto* settingsGroup = new QGroupBox(Loc::t("settings.title"));
+    auto* form = new QFormLayout(settingsGroup);
+    form->setContentsMargins(14, 14, 14, 14);
+    form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
     form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-    form->setHorizontalSpacing(10);
-    form->setVerticalSpacing(10);
+    form->setRowWrapPolicy(QFormLayout::DontWrapRows);
+    form->setHorizontalSpacing(12);
+    form->setVerticalSpacing(12);
 
     // Small helper: place [control][reset] in one row.
     auto controlWithReset = [&](QWidget* control, ResetTarget target) -> QWidget* {
@@ -467,7 +477,7 @@ QWidget* SettingsWindow::buildGeneralTab() {
         form->addRow(QString(), launch);
     }
 
-    outer->addLayout(form);
+    outer->addWidget(settingsGroup);
     outer->addStretch(1);
 
     // About section pinned at the bottom of the General tab.
@@ -485,53 +495,59 @@ QWidget* SettingsWindow::buildFeaturesTab() {
 
     auto* tab = new QWidget;
     auto* v = new QVBoxLayout(tab);
-    v->setContentsMargins(20, 26, 20, 20);
-    v->setSpacing(4);
+    v->setContentsMargins(20, 20, 20, 20);
+    v->setSpacing(14);   // consistent gap between grouped sections
 
-    auto header = [&](const QString& title) {
-        v->addSpacing(22 - 4);
-        auto* l = new QLabel(title);
-        QFont f = l->font(); f.setBold(true); f.setPointSize(12); l->setFont(f);
-        v->addWidget(l);
-        v->addSpacing(6);
+    // Each section is a titled QGroupBox holding a vertical stack of checkboxes,
+    // so the tab reads as three tidy, aligned groups instead of loose labels and
+    // hand-tuned spacers.
+    auto makeGroup = [&](const QString& title) -> QVBoxLayout* {
+        auto* box = new QGroupBox(title);
+        auto* gl = new QVBoxLayout(box);
+        gl->setContentsMargins(14, 12, 14, 12);
+        gl->setSpacing(8);
+        v->addWidget(box);
+        return gl;
     };
-    auto check = [&](const QString& title, bool on,
+    auto check = [&](QVBoxLayout* into, const QString& title, bool on,
                      std::function<void(bool)> handler) {
         auto* b = new QCheckBox(title);
         b->setChecked(on);
-        b->setContentsMargins(10, 0, 0, 0);
-        connect(b, &QCheckBox::toggled, this, [handler](bool v){ handler(v); });
-        v->addWidget(b);
+        connect(b, &QCheckBox::toggled, this, [handler](bool val){ handler(val); });
+        into->addWidget(b);
     };
 
     // Tools.
-    header(Loc::t("features.toolsTitle"));
-    for (Tool t : kFeatureTools) {
-        const QString key = QStringLiteral("tool.%1").arg(QString::fromUtf8(toolKey(t)));
-        check(Loc::t(key), s.isToolEnabled(t), [t](bool on) {
-            Settings::instance().setToolEnabled(t, on);
-        });
+    {
+        QVBoxLayout* g = makeGroup(Loc::t("features.toolsTitle"));
+        for (Tool t : kFeatureTools) {
+            const QString key = QStringLiteral("tool.%1").arg(QString::fromUtf8(toolKey(t)));
+            check(g, Loc::t(key), s.isToolEnabled(t), [t](bool on) {
+                Settings::instance().setToolEnabled(t, on);
+            });
+        }
     }
 
     // Interface.
-    v->addSpacing(10);
-    header(Loc::t("features.interfaceTitle"));
-    check(Loc::t("features.showColors"), s.showColorPalette(), [](bool on) {
-        Settings::instance().setShowColorPalette(on);
-    });
+    {
+        QVBoxLayout* g = makeGroup(Loc::t("features.interfaceTitle"));
+        check(g, Loc::t("features.showColors"), s.showColorPalette(), [](bool on) {
+            Settings::instance().setShowColorPalette(on);
+        });
+    }
 
     // Text.
-    v->addSpacing(10);
-    header(Loc::t("features.textTitle"));
-    check(Loc::t("features.textAlignment"), s.textAlignmentEnabled(), [](bool on) {
-        Settings::instance().setTextAlignmentEnabled(on);
-    });
-    check(Loc::t("features.textBackground"), s.textBackgroundEnabled(), [](bool on) {
-        Settings::instance().setTextBackgroundEnabled(on);
-    });
+    {
+        QVBoxLayout* g = makeGroup(Loc::t("features.textTitle"));
+        check(g, Loc::t("features.textAlignment"), s.textAlignmentEnabled(), [](bool on) {
+            Settings::instance().setTextAlignmentEnabled(on);
+        });
+        check(g, Loc::t("features.textBackground"), s.textBackgroundEnabled(), [](bool on) {
+            Settings::instance().setTextBackgroundEnabled(on);
+        });
+    }
 
     // Footer hint.
-    v->addSpacing(12);
     auto* hint = new QLabel(Loc::t("features.hint"));
     QFont f = hint->font(); f.setPointSize(11); hint->setFont(f);
     hint->setStyleSheet("color: palette(mid);");
