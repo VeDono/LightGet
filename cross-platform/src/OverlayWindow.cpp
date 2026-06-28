@@ -721,16 +721,33 @@ void OverlayWindow::drawSelectionChrome(QPainter& p) {
 // Dashed frame + blue resize handle (diagonal-arrows) + blue rotate handle
 // (reload icon), rotated about center.
 void OverlayWindow::drawActiveTextChrome(QPainter& p) {
-    if (m_tool != Tool::Text || m_editingIndex != -1) return;
-    if (!m_activeTextIndex) return;
-    const int idx = *m_activeTextIndex;
-    if (idx >= m_annotations.size() || m_annotations[idx].tool != Tool::Text) return;
-    const Annotation& a = m_annotations[idx];
-    const QPointF c = textCenter(a);
+    if (m_tool != Tool::Text) return;
+    // Frame + transform handles are shown BOTH while editing (around the live
+    // editor) and for a selected committed text — so resize/rotate are available
+    // immediately, matching the design's "Текст в контексте" view.
+    QRectF localRect;   // text box, local (unrotated) coords
+    QPointF c;          // rotation center
+    qreal rot = 0.0;
+    if (m_textEditor) {
+        localRect = QRectF(m_textEditor->geometry());   // live editor isn't rotated
+        c = localRect.center();
+    } else if (m_editingIndex == -1 && m_activeTextIndex &&
+               *m_activeTextIndex < m_annotations.size() &&
+               m_annotations[*m_activeTextIndex].tool == Tool::Text) {
+        const Annotation& a = m_annotations[*m_activeTextIndex];
+        localRect = textLocalRect(a);
+        c = textCenter(a);
+        rot = a.rotation;
+    } else {
+        return;
+    }
+    const QRectF frame = localRect.adjusted(-3, -3, 3, 3);
+    const QRectF rh(frame.right() - 9, frame.bottom() - 9, 18, 18);   // resize (BR)
+    const QRectF roth(frame.right() - 9, frame.top() - 9, 18, 18);    // rotate (TR)
 
     p.save();
     p.translate(c);
-    p.rotate(a.rotation * 180.0 / M_PI);
+    p.rotate(rot * 180.0 / M_PI);
     p.translate(-c);
 
     // Dashed white@90% frame.
@@ -742,12 +759,11 @@ void OverlayWindow::drawActiveTextChrome(QPainter& p) {
     dash.setDashPattern({4, 3});
     p.setPen(dash);
     p.setBrush(Qt::NoBrush);
-    p.drawRect(textLocalRect(a).adjusted(-3, -3, 3, 3));
+    p.drawRect(frame);
 
     const QColor blue("#007AFF");
 
     // Resize handle (bottom-right): blue circle + diagonal-arrows glyph.
-    const QRectF rh = resizeHandleLocal(a);
     p.setPen(Qt::NoPen);
     p.setBrush(blue);
     p.drawEllipse(rh);
@@ -773,7 +789,6 @@ void OverlayWindow::drawActiveTextChrome(QPainter& p) {
     }
 
     // Rotate handle (top-right): blue circle + circular-reload glyph.
-    const QRectF roth = rotateHandleLocal(a);
     p.setPen(Qt::NoPen);
     p.setBrush(blue);
     p.drawEllipse(roth);
@@ -908,7 +923,37 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
     // one": the align / ✓ / ✗ buttons are child widgets, so a real click on them
     // never reaches here — only a genuine "click elsewhere" does, and that should
     // simply finish the current text.
-    if (m_textEditor) { commitTextEditing(); update(); return; }
+    if (m_textEditor) {
+        // Grabbing a transform handle WHILE editing: commit the text, then begin
+        // the resize/rotate drag on the freshly-committed annotation in the SAME
+        // gesture — so the handles are usable immediately, without a separate ✓.
+        const QRectF frame = QRectF(m_textEditor->geometry()).adjusted(-3, -3, 3, 3);
+        const QRectF roth(frame.right() - 9, frame.top() - 9, 18, 18);     // rotate (TR)
+        const QRectF rh(frame.right() - 9, frame.bottom() - 9, 18, 18);    // resize (BR)
+        const bool onRotate = roth.adjusted(-4, -4, 4, 4).contains(p);
+        const bool onResize = rh.adjusted(-4, -4, 4, 4).contains(p);
+        commitTextEditing();
+        if ((onRotate || onResize) && m_activeTextIndex &&
+            *m_activeTextIndex < m_annotations.size() &&
+            m_annotations[*m_activeTextIndex].tool == Tool::Text) {
+            const Annotation& a = m_annotations[*m_activeTextIndex];
+            const QPointF c = textCenter(a);
+            if (onRotate) {
+                m_dragMode = DragMode::RotateText;
+                m_textRotateStartAngle = a.rotation;
+                m_textRotateStartPointerAngle = std::atan2(p.y() - c.y(), p.x() - c.x());
+                setCursor(Qt::ClosedHandCursor);
+            } else {
+                m_dragMode = DragMode::ResizeText;
+                m_textResizeStartSize = a.fontSize;
+                m_textResizeStartPoint = p;
+                setCursor(Qt::CrossCursor);
+            }
+            beginCustomCursorDrag();
+        }
+        update();
+        return;
+    }
 
     if (m_selection) {
         const QRectF sel = *m_selection;
@@ -1745,8 +1790,9 @@ void OverlayWindow::positionTextPanel() {
         return;
     }
     qreal x = box.center().x() - sz.width() / 2.0;
-    qreal y = box.top() - sz.height() - 12;       // above the block
-    if (y < 0) y = box.bottom() + 12;             // no room above -> below
+    // Sit clear of the top-right rotate handle (which hangs ~12px above the block).
+    qreal y = box.top() - sz.height() - 22;       // above the block
+    if (y < 0) y = box.bottom() + 22;             // no room above -> below the resize handle
     x = std::min<qreal>(std::max<qreal>(0, x), width() - sz.width());
     y = std::min<qreal>(std::max<qreal>(0, y), height() - sz.height());
     m_textPanel->move(static_cast<int>(x), static_cast<int>(y));
