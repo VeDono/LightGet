@@ -6,7 +6,7 @@
 
 <p align="center">
   A fast, cross-platform screenshot &amp; annotation tool — Lightshot-style.<br>
-  Press a hotkey, the screen dims, select an area and annotate it right there
+  Press a hotkey, the screen dims, select an area, and annotate it right there
   (arrows, shapes, pen, text), then copy or save.
 </p>
 
@@ -101,8 +101,19 @@ This edition is no longer actively developed.
 ---
 
 ## Demo
-Video usage:
-https://github.com/user-attachments/assets/ac8c00cf-3264-4689-9c85-90b17594d783
+
+Video example 1:
+https://github.com/user-attachments/assets/1d78ecb7-711a-4788-9a97-b567b3d0e88f
+
+Video example 2:
+https://github.com/user-attachments/assets/df1faebf-5d7f-4e0d-be31-d626d0ada0e5
+
+
+## Screenshots
+
+Menu of the app at the bar:
+
+<img width="263" height="193" alt="image" src="https://github.com/user-attachments/assets/af1cbc3e-4853-4a9a-8a35-37b0bc7b7cbc" />
 
 General setting page:
 <img width="1919" height="1072" alt="image" src="https://github.com/user-attachments/assets/4535c5ba-e493-433e-9425-ae1f9db05920" />
@@ -111,7 +122,8 @@ Features setting page:
 <img width="1919" height="1072" alt="image" src="https://github.com/user-attachments/assets/43c8a554-0b8e-41da-8b40-dbbb437d7a10" />
 
 Additional example:
-<img width="1534" alt="LightGet in action" src="https://github.com/user-attachments/assets/e780e8e8-1a9f-44c9-b2b3-a010b76c5528" />
+<img width="1534" height="859" alt="image" src="https://github.com/user-attachments/assets/8b3984c9-b95e-4ae3-843f-320169a03c94" />
+
 
 ---
 
