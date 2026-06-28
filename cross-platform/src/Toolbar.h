@@ -179,6 +179,7 @@ private:
     void rebuild();                                  // (re)build per Settings toggles
     void refreshVisualState();                       // sync button looks to m_*
     void openColorPopup(bool background, QWidget* anchor);
+    void openFontPopup(QWidget* anchor);             // in-overlay font list (no QMenu)
     void closeColorPopup();
 
     // Current state (mirrors the edited annotation).

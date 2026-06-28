@@ -17,9 +17,8 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QFrame>
-#include <QMenu>
-#include <QAction>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
@@ -942,23 +941,7 @@ void TextPanel::rebuild() {
             "QPushButton{border:none;border-radius:8px;background:transparent;color:%1;"
             "padding:0 8px;font-size:13px;}"
             "QPushButton:hover{background:%2;}").arg(cssCol(glyph), cssCol(kHoverFill)));
-        auto* menu = new QMenu(m_fontBtn);
-        struct F { const char* label; const char* fam; };
-        static const F fonts[] = {
-            {"System", ""}, {"Helvetica Neue", "Helvetica Neue"}, {"Arial", "Arial"},
-            {"Georgia", "Georgia"}, {"Times New Roman", "Times New Roman"},
-            {"Courier New", "Courier New"}, {"Menlo", "Menlo"},
-        };
-        for (const F& f : fonts) {
-            const QString fam = QString::fromLatin1(f.fam);
-            QAction* act = menu->addAction(QString::fromLatin1(f.label));
-            connect(act, &QAction::triggered, this, [this, fam]() {
-                m_family = fam; refreshVisualState(); emit fontFamilyChanged(fam);
-            });
-        }
-        connect(m_fontBtn, &QPushButton::clicked, this, [this, menu]() {
-            menu->popup(m_fontBtn->mapToGlobal(QPoint(0, m_fontBtn->height() + 4)));
-        });
+        connect(m_fontBtn, &QPushButton::clicked, this, [this]() { openFontPopup(m_fontBtn); });
         m_row->addWidget(m_fontBtn, 0, Qt::AlignVCenter);
         addDivider();
     }
@@ -1130,6 +1113,50 @@ void TextPanel::setState(const QString& family, int size, bool bold, bool italic
 
 void TextPanel::closeColorPopup() {
     if (m_colorPopup) { m_colorPopup->deleteLater(); m_colorPopup = nullptr; }
+}
+
+void TextPanel::openFontPopup(QWidget* anchor) {
+    closeColorPopup();
+    QWidget* host = parentWidget();
+    if (!host || !anchor) return;
+    auto* pop = new QWidget(host);
+    pop->setObjectName("cpop");
+    pop->setStyleSheet(QStringLiteral(
+        "#cpop{background:%1;border:1px solid %2;border-radius:10px;}")
+        .arg(cssCol(kPanelSurface), cssCol(kPanelBorder)));
+    auto* v = new QVBoxLayout(pop);
+    v->setContentsMargins(6, 6, 6, 6);
+    v->setSpacing(2);
+    struct F { const char* label; const char* fam; };
+    static const F fonts[] = {
+        {"System", ""}, {"Helvetica Neue", "Helvetica Neue"}, {"Arial", "Arial"},
+        {"Georgia", "Georgia"}, {"Times New Roman", "Times New Roman"},
+        {"Courier New", "Courier New"}, {"Menlo", "Menlo"},
+    };
+    for (const F& f : fonts) {
+        const QString fam = QString::fromLatin1(f.fam);
+        auto* b = new QPushButton(QString::fromLatin1(f.label), pop);
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setStyleSheet(QStringLiteral(
+            "QPushButton{border:none;border-radius:6px;color:#e8e8ea;background:transparent;"
+            "text-align:left;padding:5px 12px;font-size:13px;}"
+            "QPushButton:hover{background:%1;}").arg(cssCol(kSelectedBlue)));
+        if (!fam.isEmpty()) { QFont ff(fam); ff.setPixelSize(13); b->setFont(ff); }
+        connect(b, &QPushButton::clicked, this, [this, fam]() {
+            m_family = fam; refreshVisualState();
+            emit fontFamilyChanged(fam); closeColorPopup();
+        });
+        v->addWidget(b);
+    }
+    pop->adjustSize();
+    const QPoint a = anchor->mapTo(host, QPoint(0, anchor->height()));
+    int x = qBound(0, a.x(), qMax(0, host->width() - pop->width()));
+    int y = qBound(0, a.y() + 6, qMax(0, host->height() - pop->height()));
+    pop->move(x, y);
+    pop->show();
+    pop->raise();
+    m_colorPopup = pop;
 }
 
 void TextPanel::openColorPopup(bool background, QWidget* anchor) {
