@@ -58,6 +58,7 @@ private:
     void applyBarIcon();        // custom 18x18 path OR named icon asset
     QMenu* buildMenu();         // rebuilt on language change
     void rebuildMenu();
+    void applyMenuTheme();      // (re)apply light/dark stylesheet + icon tints
 
     // Capture pipeline (Spec 2 §2.9).
     void onCaptureFinished();   // overlay closed callback -> overlay=null, isCapturing=false
@@ -76,6 +77,8 @@ private:
     QSystemTrayIcon* m_tray = nullptr;
     QMenu* m_menu = nullptr;
     QAction* m_captureAction = nullptr;     // title updated live to show hotkey
+    QAction* m_settingsAction = nullptr;    // re-tinted by applyMenuTheme()
+    QAction* m_quitAction = nullptr;        // re-tinted by applyMenuTheme()
 
     GlobalHotkey* m_hotKey = nullptr;
     SettingsWindow* m_settings = nullptr;   // lazily created, cached

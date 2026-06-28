@@ -818,43 +818,36 @@ void AppearanceSegment::paintEvent(QPaintEvent*) {
         const qreal startX = segR.center().x() - totalW / 2.0;
         const qreal cy = segR.center().y();
 
-        // Glyph (stroked, 1.7 width) drawn in a 14x14 box.
+        // Glyph drawn 1:1 from the design (24x24 viewBox) into the 14px box.
         QRectF g(startX, cy - glyphSz / 2.0, glyphSz, glyphSz);
-        QPen gp(c, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        const qreal gsc = glyphSz / 24.0;
+        auto GP = [&](qreal x, qreal y) {
+            return QPointF(g.left() + x * gsc, g.top() + y * gsc);
+        };
+        QPen gp(c, 1.7 * gsc, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
         p.setPen(gp);
         p.setBrush(Qt::NoBrush);
         if (i == 0) {
-            // Auto: monitor (rect + stand).
-            QRectF mon(g.left() + 1.5, g.top() + 2.2, g.width() - 3.0, g.height() - 6.0);
-            p.drawRoundedRect(mon, 1.6, 1.6);
-            p.drawLine(QPointF(g.center().x() - 2.6, g.bottom() - 0.5),
-                       QPointF(g.center().x() + 2.6, g.bottom() - 0.5));
-            p.drawLine(QPointF(g.center().x(), mon.bottom()),
-                       QPointF(g.center().x(), g.bottom() - 1.0));
+            // Auto: monitor — rect 3,4 18x13 r2 + base bar + stem (design).
+            p.drawRoundedRect(QRectF(GP(3, 4), GP(21, 17)), 2 * gsc, 2 * gsc);
+            p.drawLine(GP(8, 21), GP(16, 21));
+            p.drawLine(GP(12, 17), GP(12, 21));
         } else if (i == 1) {
-            // Light: sun (circle + 8 rays).
-            const qreal cx = g.center().x(), cyy = g.center().y();
-            const qreal rad = 2.6;
-            p.drawEllipse(QPointF(cx, cyy), rad, rad);
-            const qreal r0 = rad + 1.4, r1 = rad + 3.2;
+            // Light: sun — circle r4 + 8 detached rays (radius 8->10), per design.
+            const QPointF ctr = g.center();
+            p.drawEllipse(ctr, 4 * gsc, 4 * gsc);
             for (int a = 0; a < 8; ++a) {
                 const qreal ang = a * (M_PI / 4.0);
                 const qreal dx = std::cos(ang), dy = std::sin(ang);
-                p.drawLine(QPointF(cx + dx * r0, cyy + dy * r0),
-                           QPointF(cx + dx * r1, cyy + dy * r1));
+                p.drawLine(QPointF(ctr.x() + dx * 8 * gsc,  ctr.y() + dy * 8 * gsc),
+                           QPointF(ctr.x() + dx * 10 * gsc, ctr.y() + dy * 10 * gsc));
             }
         } else {
-            // Dark: crescent moon.
-            QPainterPath moon;
-            const qreal cx = g.center().x(), cyy = g.center().y();
-            moon.addEllipse(QPointF(cx - 0.3, cyy), 5.2, 5.2);
-            QPainterPath cut;
-            cut.addEllipse(QPointF(cx + 2.6, cyy - 1.4), 5.0, 5.0);
-            moon = moon.subtracted(cut);
-            p.setPen(Qt::NoPen);
-            p.setBrush(c);
-            p.drawPath(moon);
-            p.setBrush(Qt::NoBrush);
+            // Dark: crescent moon (design M21 12.8 A8.5..11.2 3 A6.6..Z) — a stroked
+            // crescent = big disc minus an upper-right-offset disc.
+            QPainterPath outer; outer.addEllipse(GP(12, 12),   8.5 * gsc, 8.5 * gsc);
+            QPainterPath cut;   cut.addEllipse(GP(16.5, 7.7),  8.2 * gsc, 8.2 * gsc);
+            p.drawPath(outer.subtracted(cut));
         }
 
         // Label.

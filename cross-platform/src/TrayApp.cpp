@@ -34,6 +34,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QScreen>
+#include <QStyleHints>
 #include <QSystemTrayIcon>
 #include <QTimer>
 #include <QUrl>
@@ -119,9 +120,7 @@ QIcon makeMenuGlyph(MenuGlyph kind, const QColor& normalColor) {
 //   --c-accent      #007aff   hover/selected highlight (white text on it)
 // Item geometry mirrors the mockup: 8px/12px item padding, 6px item radius,
 // ~11px icon-to-label gap, comfortable left icon column.
-QString menuStyleSheet(const QPalette& pal, bool rounded) {
-    const bool dark = pal.color(QPalette::Window).lightness() < 128;
-
+QString menuStyleSheet(bool dark, bool rounded) {
     // Light = design tokens verbatim. Dark = readable equivalents (system dark
     // menu surface, slightly lighter border/sep, near-white text); the accent
     // (#007aff) is shared and reads white-on-blue in both.
@@ -172,6 +171,16 @@ QString menuStyleSheet(const QPalette& pal, bool rounded) {
         " margin: 5px 9px;"
         "}")
         .arg(menuBg, menuBorder, accent, text, onAccent, menuSep, cardRadius);
+}
+
+// Effective dark/light for the tray menu. The app's Appearance (auto/light/dark)
+// is applied via QStyleHints::setColorScheme (see main.cpp / SettingsWindow), so
+// reading colorScheme() back is the single source of truth — "auto" resolves to
+// the OS scheme. This is what keeps the tray menu in sync with the app theme.
+bool appIsDark() {
+    if (auto* h = QGuiApplication::styleHints())
+        return h->colorScheme() == Qt::ColorScheme::Dark;
+    return false;
 }
 
 } // namespace
@@ -286,12 +295,9 @@ QMenu* TrayApp::buildMenu() {
     menu->setWindowFlag(Qt::FramelessWindowHint, true);
     menu->setWindowFlag(Qt::NoDropShadowWindowHint, false);
     menu->setAttribute(Qt::WA_TranslucentBackground, roundedCard);
-    menu->setStyleSheet(menuStyleSheet(menu->palette(), roundedCard));
-
-    // Normal (un-highlighted) icon tint, matching the design's themed gray; the
-    // highlighted row swaps to white automatically (see makeMenuGlyph).
-    const bool menuDark = menu->palette().color(QPalette::Window).lightness() < 128;
-    const QColor iconColor = menuDark ? QColor("#c7c7cc") : QColor("#4a4a4f");
+    // Theme (stylesheet + icon tints) is applied by applyMenuTheme() — both here
+    // at build time and again on every popup, so the menu always matches the
+    // app's active light/dark scheme (fixes the wrong-theme-on-open bug).
 
     // Capture: the label shows the global-hotkey combo as a RIGHT-ALIGNED hint
     // (design: "Take Screenshot" … "⇧⌘2"), matching the look of the real ⌘,/⌘Q
@@ -308,7 +314,6 @@ QMenu* TrayApp::buildMenu() {
                                      Settings::instance().hotKeyDisplay()));
     // QIcon::fromTheme(...) returns null on macOS (no freedesktop theme), so paint
     // small template glyphs instead — gives each item a subtle native-style icon.
-    m_captureAction->setIcon(makeMenuGlyph(MenuGlyph::Capture, iconColor));
     m_captureAction->setIconVisibleInMenu(true);   // macOS hides menu-item icons by default
     connect(m_captureAction, &QAction::triggered, this, &TrayApp::startCapture);
 
@@ -320,9 +325,9 @@ QMenu* TrayApp::buildMenu() {
     // double-fire risk because nothing else listens for ⌘,.
     QAction* settings = menu->addAction(Loc::t(QStringLiteral("menu.settings")));
     settings->setShortcut(QKeySequence(QKeySequence::Preferences));
-    settings->setIcon(makeMenuGlyph(MenuGlyph::Settings, iconColor));
     settings->setIconVisibleInMenu(true);
     connect(settings, &QAction::triggered, this, &TrayApp::openSettings);
+    m_settingsAction = settings;
 
     menu->addSeparator();
 
@@ -330,11 +335,29 @@ QMenu* TrayApp::buildMenu() {
     // wired to actually quit the app.
     QAction* quit = menu->addAction(Loc::t(QStringLiteral("menu.quit")));
     quit->setShortcut(QKeySequence(QKeySequence::Quit));
-    quit->setIcon(makeMenuGlyph(MenuGlyph::Power, iconColor));
     quit->setIconVisibleInMenu(true);
     connect(quit, &QAction::triggered, qApp, &QApplication::quit);
+    m_quitAction = quit;
 
+    applyMenuTheme();   // initial stylesheet + icon tints for the active theme
     return menu;
+}
+
+// Apply the active light/dark scheme to the tray menu: stylesheet + the three
+// item icons' resting tint. Driven by QStyleHints::colorScheme() (the same source
+// the rest of the app uses for the Appearance setting), so the menu can never
+// open in a scheme that disagrees with the app theme. Re-run on every popup.
+void TrayApp::applyMenuTheme() {
+    if (!m_menu) return;
+    const bool dark = appIsDark();
+    const bool rounded = (QGuiApplication::platformName() != QLatin1String("xcb"));
+    m_menu->setStyleSheet(menuStyleSheet(dark, rounded));
+    // Resting icon tint (themed gray); the highlighted row swaps to white
+    // automatically via the icon's Selected/Active pixmaps (see makeMenuGlyph).
+    const QColor iconColor = dark ? QColor("#c7c7cc") : QColor("#4a4a4f");
+    if (m_captureAction)  m_captureAction->setIcon(makeMenuGlyph(MenuGlyph::Capture, iconColor));
+    if (m_settingsAction) m_settingsAction->setIcon(makeMenuGlyph(MenuGlyph::Settings, iconColor));
+    if (m_quitAction)     m_quitAction->setIcon(makeMenuGlyph(MenuGlyph::Power, iconColor));
 }
 
 void TrayApp::rebuildMenu() {
@@ -346,6 +369,7 @@ void TrayApp::rebuildMenu() {
 void TrayApp::onTrayActivated(int reason) {
     Q_UNUSED(reason);   // any activation (left/right/etc.) opens the menu
     if (!m_menu || !m_tray) return;
+    applyMenuTheme();   // re-sync to the current theme before showing
     // Show the menu CENTERED horizontally under the tray icon: the menu's center
     // sits right below the icon's center. Use the icon's screen rect when the
     // platform reports it; otherwise center on the click position (some platforms,
