@@ -392,7 +392,32 @@ void TrayApp::onTrayActivated(int reason) {
         pos = QPoint(iconRect.center().x() - menuW / 2, iconRect.bottom() + 2);
     else
         pos = QCursor::pos() - QPoint(menuW / 2, 0);
+
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+    // LSUIElement (accessory) app: it is NOT the active app on a mere status-item
+    // click, and onTrayActivated runs INSIDE macOS's status-item mouse-tracking
+    // handler. The tray menu is a styled Qt QMenu — a real frameless/translucent
+    // NSWindow, NOT a native NSMenu — so if we order it front right now it never
+    // becomes key, and the FIRST click only dismisses it without firing ANY
+    // QAction (the "first tray action does nothing" bug — hit Capture, Settings
+    // AND Quit). activateIgnoringOtherApps: only POSTS the activation; it settles
+    // once the tracking handler unwinds. So activate NOW and pop the menu one
+    // event-loop turn later (singleShot 0): by then the app is active and the
+    // popup's window becomes key on creation, so the first click fires. raise() +
+    // activateWindow() force-key it as belt-and-suspenders (mirrors the overlay's
+    // makeKeyAndOrderFront). Preserves the styled, centered QMenu (no native-NSMenu
+    // regression) and matches the system-activated native Swift menu.
+    extern void MacNative_activateApp();   // implemented in MacNative.mm
+    MacNative_activateApp();
+    QTimer::singleShot(0, this, [this, pos]() {
+        if (!m_menu) return;
+        m_menu->popup(pos);
+        m_menu->raise();
+        m_menu->activateWindow();
+    });
+#else
     m_menu->popup(pos);
+#endif
 }
 
 // ===========================================================================

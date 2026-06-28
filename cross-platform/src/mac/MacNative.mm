@@ -143,6 +143,23 @@ void MacNative_confineCursorToScreen(WId win) {
 }
 
 // ---------------------------------------------------------------------------
+// MacNative_activateApp — bring the LSUIElement (accessory) app to the
+// foreground so a window it is about to show can become key.
+//
+// [NSApp activateIgnoringOtherApps:YES] only POSTS an activation request; the
+// app does not actually become active/key-eligible until the next run-loop pass
+// (and when called from inside the status-item mouse-tracking handler, not until
+// that tracking unwinds). Callers that need a freshly-shown window to be key on
+// the FIRST attempt must therefore activate now and defer the show by one
+// event-loop turn — see TrayApp::onTrayActivated, which QTimer::singleShot(0)s
+// the QMenu::popup(). Same activation step OverlayWindow_applyShieldLevel relies
+// on for the shield (MacNative.mm above).
+// ---------------------------------------------------------------------------
+void MacNative_activateApp() {
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
+// ---------------------------------------------------------------------------
 // TrayApp_forceCursorVisible — defeat an app that hid the system cursor
 // (e.g. a full-screen game using NSCursor.hide / CGDisplayHideCursor / mouselook)
 // so the crosshair is usable on the overlay. Re-associates the mouse and unhides
