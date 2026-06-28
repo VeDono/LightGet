@@ -2,8 +2,10 @@ cmake_minimum_required(VERSION 3.16)
 
 project(LightGet LANGUAGES CXX)
 
-# Configurable identity. Override at configure time to build a parallel/alternate
-# install, e.g. -DAPP_NAME="LightGet Qt" -DBUNDLE_ID=com.mrleondono.LightGetQt.
+# Configurable identity. The Qt port ships as "LightGet" (com.mrleondono.LightGet);
+# the native Swift app is "LightGet SWFT" (com.mrleondono.LightGetSWFT), so the two
+# can coexist in /Applications. Override at configure time only for a throwaway
+# parallel build, e.g. -DAPP_NAME="LightGet Dev" -DBUNDLE_ID=com.mrleondono.LightGetDev.
 # APP_NAME also becomes the in-app settings scope (own QSettings store).
 set(APP_NAME "LightGet" CACHE STRING "Product / bundle display name")
 set(BUNDLE_ID "com.mrleondono.LightGet" CACHE STRING "macOS bundle identifier")

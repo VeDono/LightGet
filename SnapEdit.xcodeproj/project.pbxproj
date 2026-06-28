@@ -231,8 +231,8 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mrleondono.LightGet;
-				PRODUCT_NAME = LightGet;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mrleondono.LightGetSWFT;
+				PRODUCT_NAME = "LightGet SWFT";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -256,8 +256,8 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mrleondono.LightGet;
-				PRODUCT_NAME = LightGet;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mrleondono.LightGetSWFT;
+				PRODUCT_NAME = "LightGet SWFT";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
