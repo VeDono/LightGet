@@ -101,9 +101,16 @@ This edition is no longer actively developed.
 ---
 
 ## Demo
-
+Video usage:
 https://github.com/user-attachments/assets/ac8c00cf-3264-4689-9c85-90b17594d783
 
+General setting page:
+<img width="1919" height="1072" alt="image" src="https://github.com/user-attachments/assets/4535c5ba-e493-433e-9425-ae1f9db05920" />
+
+Features setting page:
+<img width="1919" height="1072" alt="image" src="https://github.com/user-attachments/assets/43c8a554-0b8e-41da-8b40-dbbb437d7a10" />
+
+Additional example:
 <img width="1534" alt="LightGet in action" src="https://github.com/user-attachments/assets/e780e8e8-1a9f-44c9-b2b3-a010b76c5528" />
 
 ---
