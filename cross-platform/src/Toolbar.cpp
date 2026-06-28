@@ -92,8 +92,9 @@ const QColor kHoverFill(255, 255, 255, 23);       // hover bg — rgba(255,255,2
 const QColor kCloseHoverFill(0xff, 0x69, 0x61, 41);// close hover — rgba(255,105,97,0.16)
 const QColor kSeparator(255, 255, 255, 26);       // 1px divider — rgba(255,255,255,0.1)
 
-// Render a vector glyph centered into a transparent pixmap of `size`, stroked /
-// filled in `tint`. The path is drawn in a 0..1 unit box then scaled to fit.
+// Render a toolbar glyph centered into a transparent pixmap of `size`, stroked /
+// filled in `tint`. Each glyph is drawn 1:1 from the design's 24x24 SVG viewBox
+// (see the per-glyph comments below), scaled into a centered side*0.525 box.
 QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
     const int side = size;
     const qreal dpr = 2.0;
@@ -104,230 +105,136 @@ QIcon makeGlyph(const QString& symbol, const QColor& tint, int size = 30) {
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    // Glyph drawing area: a centered square inset from the icon canvas. The design
-    // (toolbar_canvas.html §1) draws ~21px SVG glyphs in a 40px button — a ~0.52
-    // fill ratio — with a 1.8/24 ≈ 0.075 relative stroke. We keep the procedural
-    // glyph SHAPES (tuned to the native SF symbols) and only match the design's
-    // footprint/weight: inset 0.24 → glyph ≈ side*0.52, stroke ≈ side*0.045 of the
-    // button (≈0.075 of the glyph box), reading like the design's line icons.
-    const qreal inset = side * 0.24;
-    const QRectF box(inset, inset, side - 2 * inset, side - 2 * inset);
-    const qreal w = box.width(), h = box.height();
-    const qreal x0 = box.left(), y0 = box.top();
-    auto px = [&](qreal u) { return x0 + u * w; };  // u in 0..1
-    auto py = [&](qreal v) { return y0 + v * h; };  // v in 0..1 (top-down)
-
-    QPen stroke(tint);
-    stroke.setWidthF(side * 0.045);   // matches the design's ~1.8/24 line weight
-    stroke.setCapStyle(Qt::RoundCap);
-    stroke.setJoinStyle(Qt::RoundJoin);
+    // Each glyph is drawn 1:1 from the toolbar design SVGs (24x24 viewBox), scaled
+    // into a centered glyph box of side*0.525 (≈21px in a 40px button — the design
+    // ratio). PT() maps design coords into that box; default stroke = the design's
+    // 1.8/24 line weight, round caps/joins.
+    const qreal glyphBox = side * 0.525;
+    const qreal gx = (side - glyphBox) / 2.0, gy = (side - glyphBox) / 2.0;
+    const qreal sc = glyphBox / 24.0;
+    auto PT = [&](qreal x, qreal y) { return QPointF(gx + x * sc, gy + y * sc); };
+    const qreal SW = 1.8 * sc;
+    QPen stroke(tint, SW, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
     p.setPen(stroke);
     p.setBrush(Qt::NoBrush);
 
-    // Button-centered coordinate helpers: bx/by map a fraction (0..1) of the WHOLE
-    // button (side), centered. The tool/action glyphs below are redrawn to match
-    // the native macOS SF-symbol toolbar 1:1; several native glyphs (rectangle,
-    // doc.on.doc, uturn, save) have footprints larger than the 0.48-wide default
-    // `box`, so they are laid out in these button-fraction coords instead. Each
-    // glyph's footprint was measured against a render of the real SF symbols at
-    // the same scale and tuned to the same width/height/center.
-    const qreal cxB = side * 0.5, cyB = side * 0.5;
-    auto bx = [&](qreal f) { return cxB + (f - 0.5) * side; };
-    auto by = [&](qreal f) { return cyB + (f - 0.5) * side; };
-
     if (symbol == "cursorarrow") {
-        // Native cursorarrow (design §1): a FILLED classic pointer, tilted slightly,
-        // hotspot tip at the upper-left. A clean arrowhead with a notch and a short
-        // tail prong angling down-right. Rounded vertices via a same-color
-        // round-join stroke so the filled shape reads soft like the design.
+        // Design cursor: M5 3 l5.4 14.6 l2.2 -6.1 l6.1 -2.2 z (filled).
         QPainterPath path;
-        path.moveTo(bx(0.345), by(0.235));  // hotspot tip (upper-left)
-        path.lineTo(bx(0.345), by(0.700));  // straight leading edge down
-        path.lineTo(bx(0.455), by(0.595));  // in to the deep notch base
-        path.lineTo(bx(0.560), by(0.785));  // down-right to the tail foot (outer)
-        path.lineTo(bx(0.645), by(0.745));  // tail foot (outer corner)
-        path.lineTo(bx(0.540), by(0.560));  // back up the inner tail edge
-        path.lineTo(bx(0.700), by(0.560));  // out to the trailing shoulder
+        path.moveTo(PT(5, 3));
+        path.lineTo(PT(10.4, 17.6));
+        path.lineTo(PT(12.6, 11.5));
+        path.lineTo(PT(18.7, 9.3));
         path.closeSubpath();
-        p.setPen(QPen(tint, side * 0.05, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setPen(Qt::NoPen);
         p.setBrush(tint);
         p.drawPath(path);
     } else if (symbol == "arrow.up.right") {
-        // Native: a thin shaft from bottom-left to top-right capped with a small
-        // OPEN chevron head (two strokes), NOT a filled triangle — distinct from
-        // the plain Line tool. Round caps. Footprint ~0.38 square.
-        const QPointF tail(bx(0.32), by(0.68));
-        const QPointF tip(bx(0.68), by(0.32));
-        p.drawLine(tail, tip);
-        const qreal armLen = side * 0.20;
-        p.drawLine(tip, QPointF(tip.x() - armLen, tip.y()));   // arm to the left
-        p.drawLine(tip, QPointF(tip.x(), tip.y() + armLen));   // arm downward
+        p.drawLine(PT(6, 18), PT(17.5, 6.5));
+        QPainterPath head;
+        head.moveTo(PT(10, 6.5));
+        head.lineTo(PT(17.5, 6.5));
+        head.lineTo(PT(17.5, 14));
+        p.drawPath(head);
     } else if (symbol == "line.diagonal") {
-        // Native footprint ~0.41.
-        p.drawLine(QPointF(bx(0.295), by(0.705)), QPointF(bx(0.705), by(0.295)));
+        p.drawLine(PT(5, 19), PT(19, 5));
     } else if (symbol == "rectangle") {
-        // Native (design §1): a FLAT landscape rounded outline ~0.56w x 0.34h with a
-        // small corner radius — wider and shorter than a square, sitting centered.
-        const qreal rw = side * 0.56, rh = side * 0.34;
-        const QRectF r(bx(0.5) - rw / 2.0, by(0.5) - rh / 2.0, rw, rh);
-        const qreal rad = side * 0.06;
-        p.drawRoundedRect(r, rad, rad);
+        p.drawRoundedRect(QRectF(PT(4, 6.5), PT(20, 17.5)), 2.5 * sc, 2.5 * sc);
     } else if (symbol == "rectangle.fill") {
-        // Same flat landscape shape as `rectangle`, filled.
-        const qreal rw = side * 0.56, rh = side * 0.34;
-        const QRectF r(bx(0.5) - rw / 2.0, by(0.5) - rh / 2.0, rw, rh);
-        const qreal rad = side * 0.06;
         p.setBrush(tint);
-        p.setPen(QPen(tint, side * 0.03, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        p.drawRoundedRect(r, rad, rad);
+        p.setPen(Qt::NoPen);
+        p.drawRoundedRect(QRectF(PT(4, 6.5), PT(20, 17.5)), 2.5 * sc, 2.5 * sc);
     } else if (symbol == "pencil") {
-        // Native "pencil" (design §1): a SLANTED pencil along the up-right diagonal —
-        // a sharp writing tip at the lower-left, a long thin body, a ferrule band,
-        // and the flat cap at the upper-right, drawn as a single line icon ~0.60
-        // diagonal span. Built in axis coords: `a` runs ALONG the pencil from the tip
-        // (a=0) to the cap (a=1); `b` runs ACROSS it (-1..+1 = the two long edges).
-        const qreal cx = side * 0.5, cy = side * 0.5;
-        const qreal span  = side * 0.62;             // tip→cap diagonal length
-        const qreal halfW = side * 0.058;            // half body width (thin)
-        const qreal inv2  = 0.70710678;              // 1/sqrt(2)
-        // a in 0..1 measured from the tip end; centre the whole pencil on the button.
-        auto pt = [&](qreal a, qreal b) {
-            const qreal along = (a - 0.5) * span;    // -span/2 .. +span/2
-            return QPointF(cx + along * inv2 + b * halfW * inv2,
-                           cy - along * inv2 + b * halfW * inv2);
-        };
-        QPen pp(tint, side * 0.05, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-        p.setPen(pp);
-        p.setBrush(Qt::NoBrush);
-        const qreal bodyStart = 0.20;                // where the wood tip meets the body
-        const qreal cap       = 1.0;                 // cap end
-        // Body outline (a thin rectangle from the collar up to the cap).
+        // Design pen: M5 19 l1.4 -4 L16 5.4 l2.6 2.6 L9 17.6 z + ferrule M14 7.4 l2.6 2.6.
         QPainterPath body;
-        body.moveTo(pt(bodyStart, -1.0));
-        body.lineTo(pt(cap, -1.0));
-        body.lineTo(pt(cap,  1.0));
-        body.lineTo(pt(bodyStart, 1.0));
+        body.moveTo(PT(5, 19));
+        body.lineTo(PT(6.4, 15));
+        body.lineTo(PT(16, 5.4));
+        body.lineTo(PT(18.6, 8));
+        body.lineTo(PT(9, 17.6));
         body.closeSubpath();
         p.drawPath(body);
-        // Ferrule band just below the cap (a short cross-line).
-        p.drawLine(pt(cap - 0.18, -1.0), pt(cap - 0.18, 1.0));
-        // Filled sharp writing tip (triangle) at the lower-left (a=0 point).
-        QPainterPath tip;
-        tip.moveTo(pt(0.0, 0.0));                     // sharp point
-        tip.lineTo(pt(bodyStart, -1.0));
-        tip.lineTo(pt(bodyStart,  1.0));
-        tip.closeSubpath();
-        p.setBrush(tint);
-        p.setPen(QPen(tint, side * 0.03, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        p.drawPath(tip);
-        p.setBrush(Qt::NoBrush);
-        p.setPen(stroke);
+        p.drawLine(PT(14, 7.4), PT(16.6, 10));
     } else if (symbol == "textformat") {
-        // Native: "Aa" — a large cap A plus a smaller lowercase a (~0.59w x 0.38h),
-        // medium-weight. On macOS the default QFont is the system font (San
-        // Francisco), so this reads like the native symbol.
         p.setPen(tint);
-        const qreal baseline = by(0.69);
-        QFont fA = p.font();
-        fA.setPixelSize(int(side * 0.56));
-        fA.setWeight(QFont::Medium);
-        p.setFont(fA);
-        p.drawText(QPointF(bx(0.19), baseline), QStringLiteral("A"));
-        QFont fa = p.font();
-        fa.setPixelSize(int(side * 0.40));
-        p.setFont(fa);
-        p.drawText(QPointF(bx(0.58), baseline), QStringLiteral("a"));
-    } else if (symbol == "arrow.uturn.backward" || symbol == "arrow.uturn.forward") {
-        // Native u-turn (~0.49 square): a horizontal shaft at top with an OPEN
-        // chevron head on one side, curving down the far side into a half-loop that
-        // hooks back under. Build for "backward" (head left), mirror for "forward".
-        const bool forward = (symbol == "arrow.uturn.forward");
-        auto X = [&](qreal u) { return forward ? bx(1.0 - u) : bx(u); };
-        QPainterPath hook;
-        hook.moveTo(X(0.35), by(0.41));                       // shaft start (near head)
-        hook.lineTo(X(0.60), by(0.41));                       // shaft to the right
-        hook.cubicTo(X(0.75), by(0.41), X(0.75), by(0.70),    // round the far corner
-                     X(0.60), by(0.70));
-        hook.lineTo(X(0.52), by(0.70));                       // short tail under
-        QPen hp(tint, side * 0.066, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-        p.setPen(hp);
-        p.drawPath(hook);
-        // Open chevron head at the shaft start, pointing out (left for backward).
-        const QPointF tip(X(0.27), by(0.41));
-        const qreal aw = side * 0.105;   // chevron arm reach (x)
-        const qreal ah = side * 0.125;   // chevron arm reach (y, taller = more open)
-        p.drawLine(tip, QPointF(X(0.27) + (forward ? -aw : aw), by(0.41) - ah));
-        p.drawLine(tip, QPointF(X(0.27) + (forward ? -aw : aw), by(0.41) + ah));
+        QFont f = p.font();
+        f.setPixelSize(int(glyphBox * 0.82));
+        f.setWeight(QFont::DemiBold);
+        p.setFont(f);
+        p.drawText(QRectF(gx, gy, glyphBox, glyphBox), Qt::AlignCenter, QStringLiteral("Aa"));
+    } else if (symbol == "arrow.uturn.backward") {
+        // Undo: shaft + right semicircle to (16,18) + open arrowhead at the start.
+        QPainterPath h;
+        h.moveTo(PT(8.5, 9));
+        h.lineTo(PT(16, 9));
+        h.cubicTo(PT(18.485, 9), PT(20.5, 11.015), PT(20.5, 13.5));
+        h.cubicTo(PT(20.5, 15.985), PT(18.485, 18), PT(16, 18));
+        h.lineTo(PT(11, 18));
+        p.drawPath(h);
+        p.drawLine(PT(8.5, 9), PT(11.7, 6));
+        p.drawLine(PT(8.5, 9), PT(11.7, 12));
+    } else if (symbol == "arrow.uturn.forward") {
+        // Redo: mirror of undo (left semicircle to (8,18)).
+        QPainterPath h;
+        h.moveTo(PT(15.5, 9));
+        h.lineTo(PT(8, 9));
+        h.cubicTo(PT(5.515, 9), PT(3.5, 11.015), PT(3.5, 13.5));
+        h.cubicTo(PT(3.5, 15.985), PT(5.515, 18), PT(8, 18));
+        h.lineTo(PT(13, 18));
+        p.drawPath(h);
+        p.drawLine(PT(15.5, 9), PT(12.3, 6));
+        p.drawLine(PT(15.5, 9), PT(12.3, 12));
     } else if (symbol == "square.on.square") {
-        // Native "square.on.square" (copy): two overlapping ROUNDED SQUARE outlines
-        // (design §1) — a back square at the upper-right and a front square at the
-        // lower-left occluding it. A transparent hole is punched behind the front
-        // square so the overlap reads correctly on any panel/highlight color.
-        const qreal sq = side * 0.40;                // square side
-        const qreal cr = side * 0.085;              // corner radius
-        auto sqRect = [&](qreal lf, qreal tf) {
-            return QRectF(bx(lf), by(tf), sq, sq);
-        };
-        QPen dp(tint, side * 0.05, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-        p.setPen(dp);
-        p.drawRoundedRect(sqRect(0.40, 0.18), cr, cr);   // back square (upper-right)
-        QPainterPath front;
-        front.addRoundedRect(sqRect(0.215, 0.36), cr, cr);
-        p.save();                                        // punch a hole for the front
-        p.setCompositionMode(QPainter::CompositionMode_Clear);
-        p.setPen(Qt::NoPen);
-        p.setBrush(Qt::transparent);
-        p.drawPath(front);
-        p.restore();
-        p.setPen(dp);
-        p.drawPath(front);                               // front square (lower-left)
+        // Copy: front rounded square + back "L" (design rect 8.5,8.5 10.5 r2.5 + M5.5 14.5 V6.5 a2 .. h8).
+        p.drawRoundedRect(QRectF(PT(8.5, 8.5), PT(19, 19)), 2.5 * sc, 2.5 * sc);
+        QPainterPath back;
+        back.moveTo(PT(5.5, 14.5));
+        back.lineTo(PT(5.5, 6.5));
+        back.quadTo(PT(5.5, 4.5), PT(7.5, 4.5));
+        back.lineTo(PT(15.5, 4.5));
+        p.drawPath(back);
     } else if (symbol == "floppy") {
-        // Save = a classic FLOPPY DISK (design §1): a rounded-square body with the
-        // TOP-RIGHT corner cut diagonally; a metal-shutter slot rectangle in the
-        // upper portion; and a wide write-protect label rectangle at the bottom.
-        QPen sp(tint, side * 0.05, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-        p.setPen(sp);
-        p.setBrush(Qt::NoBrush);
-        const qreal L = bx(0.275), R = bx(0.725), T = by(0.255), B = by(0.745);
-        const qreal cut = side * 0.135;             // diagonal corner cut size
-        const qreal cr  = side * 0.05;              // small corner radius
-        // Body outline with the cut top-right corner.
+        // Save: floppy body (cut top-right) + label rect + top slot (design paths).
         QPainterPath body;
-        body.moveTo(L + cr, T);
-        body.lineTo(R - cut, T);                     // top edge to the cut start
-        body.lineTo(R, T + cut);                     // diagonal cut down-right
-        body.lineTo(R, B - cr);
-        body.quadTo(R, B, R - cr, B);
-        body.lineTo(L + cr, B);
-        body.quadTo(L, B, L, B - cr);
-        body.lineTo(L, T + cr);
-        body.quadTo(L, T, L + cr, T);
+        body.moveTo(PT(19, 21));
+        body.lineTo(PT(5, 21));
+        body.quadTo(PT(3, 21), PT(3, 19));
+        body.lineTo(PT(3, 5));
+        body.quadTo(PT(3, 3), PT(5, 3));
+        body.lineTo(PT(16, 3));
+        body.lineTo(PT(21, 8));
+        body.lineTo(PT(21, 19));
+        body.quadTo(PT(21, 21), PT(19, 21));
+        body.closeSubpath();
         p.drawPath(body);
-        // Shutter slot (upper portion): a small rect biased toward the left, its
-        // right edge stopping short of the cut corner.
-        const qreal slotL = L + (R - L) * 0.18, slotR = R - cut - side * 0.02;
-        const qreal slotT = T, slotB = T + (B - T) * 0.34;
-        p.drawLine(QPointF(slotL, slotT), QPointF(slotL, slotB));
-        p.drawLine(QPointF(slotR, slotT), QPointF(slotR, slotB));
-        p.drawLine(QPointF(slotL, slotB), QPointF(slotR, slotB));
-        // Bottom label rectangle (inset from the sides, sits on the lower body).
-        const qreal labL = L + (R - L) * 0.20, labR = R - (R - L) * 0.20;
-        const qreal labT = T + (B - T) * 0.50, labB = B;
-        p.drawLine(QPointF(labL, labT), QPointF(labR, labT));   // label top
-        p.drawLine(QPointF(labL, labT), QPointF(labL, labB));   // label left
-        p.drawLine(QPointF(labR, labT), QPointF(labR, labB));   // label right
+        QPainterPath label;
+        label.moveTo(PT(17, 21));
+        label.lineTo(PT(17, 13));
+        label.lineTo(PT(7, 13));
+        label.lineTo(PT(7, 21));
+        p.drawPath(label);
+        QPainterPath slot;
+        slot.moveTo(PT(7, 3));
+        slot.lineTo(PT(7, 8));
+        slot.lineTo(PT(15, 8));
+        p.drawPath(slot);
     } else if (symbol == "xmark") {
-        // Native footprint ~0.41 square.
-        p.drawLine(QPointF(bx(0.295), by(0.295)), QPointF(bx(0.705), by(0.705)));
-        p.drawLine(QPointF(bx(0.705), by(0.295)), QPointF(bx(0.295), by(0.705)));
+        QPen xp(tint, 1.9 * sc, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(xp);
+        p.drawLine(PT(6.5, 6.5), PT(17.5, 17.5));
+        p.drawLine(PT(17.5, 6.5), PT(6.5, 17.5));
     } else if (symbol == "checkmark") {
-        p.drawPolyline(QPolygonF({ QPointF(px(0.12), py(0.55)),
-                                   QPointF(px(0.42), py(0.85)),
-                                   QPointF(px(0.90), py(0.18)) }));
+        QPen cp(tint, 3.0 * sc, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(cp);
+        QPainterPath ck;
+        ck.moveTo(PT(5, 12.5));
+        ck.lineTo(PT(10, 17));
+        ck.lineTo(PT(19, 7));
+        p.drawPath(ck);
     } else if (symbol == "nosign") {
-        p.drawEllipse(QRectF(px(0.06), py(0.06), w * 0.88, h * 0.88));
-        const qreal d = 0.353; // ~cos(45)/2 across the circle
-        p.drawLine(QPointF(px(0.5 - d), py(0.5 - d)), QPointF(px(0.5 + d), py(0.5 + d)));
+        p.drawEllipse(PT(12, 12), 9 * sc, 9 * sc);
+        const qreal d = 6.36;   // ~9/sqrt(2)
+        p.drawLine(PT(12 - d, 12 - d), PT(12 + d, 12 + d));
     }
 
     p.end();
