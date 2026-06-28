@@ -99,8 +99,17 @@ OverlayWindow::OverlayWindow(const QImage& screenshot, QScreen* screen, QWidget*
     setFocusPolicy(Qt::StrongFocus);
     setCursor(Qt::CrossCursor);   // crosshair until a selection exists
 
-    if (m_screen)
+    if (m_screen) {
         setGeometry(m_screen->geometry());
+        // Pin the overlay to the full screen size so it CANNOT be resized. A
+        // frameless top-level window is created resizable by default, and macOS
+        // honours edge-drag resize on a resizable borderless window even with no
+        // visible border — so the user could grab an edge and shrink the overlay,
+        // which scaled the frozen screenshot into the smaller canvas (the "the
+        // still frame stretches / the app then works inside it" bug). setFixedSize
+        // sets min == max, which also makes Qt drop NSWindowStyleMaskResizable.
+        setFixedSize(m_screen->geometry().size());
+    }
 
     // macOS: kill the default window-appear animation BEFORE the overlay is ever
     // shown, so the screen does NOT visibly "zoom out and back" on capture. We do
@@ -239,16 +248,19 @@ QSizeF OverlayWindow::textSize(const Annotation& a) const {
     // Placeholder string used only for measuring an empty annotation (matches the
     // Swift hardcoded "Текст" literal — same glyph width for the min-size clamp).
     const QString s = a.text.isEmpty() ? QString::fromUtf8("Текст") : a.text;
-    // Multi-line bounding rect, word-wrapped at width 1000 (matches Swift).
     QFontMetricsF fm(font);
-    QRectF r = fm.boundingRect(QRectF(0, 0, 1000, 1e7),
-                               Qt::AlignLeft | Qt::TextWordWrap, s);
-    const qreal w = std::max(std::ceil(r.width()), qreal(10));
+    // Width = widest line's ADVANCE — the SAME metric drawTextAnnotation lays each
+    // line out with (boxW). Using horizontalAdvance (not boundingRect) keeps the
+    // selection box / handles / background rect in lock-step with the rendered
+    // glyphs: boundingRect is a tight ink box that under-reports the advance for
+    // bold / large / emoji glyphs, which let the text spill past the background.
+    const QStringList lines = s.split('\n');
+    qreal w = 10;
+    for (const QString& line : lines)
+        w = std::max(w, std::ceil(fm.horizontalAdvance(line)));
     // Height = line count x the render pitch (font height x 1.15, see
-    // drawTextAnnotation / applyAlignmentToEditor) so the selection box and
-    // handles hug the tightened multi-line text. The render is '\n'-split
-    // (NoWrap), so count newlines rather than using the word-wrapped height.
-    const int lineCount = static_cast<int>(s.count('\n')) + 1;
+    // drawTextAnnotation / applyAlignmentToEditor) so the box hugs the text.
+    const int lineCount = static_cast<int>(lines.size());
     const qreal h = std::max(std::ceil(lineCount * fm.height() * 1.15),
                              qreal(font.pointSizeF()));
     return QSizeF(w, h);
@@ -323,14 +335,16 @@ void OverlayWindow::paintEvent(QPaintEvent* event) {
 
     // Blit the cached upright backdrop instead of re-rendering the full QImage
     // (with its orientation transform) every frame — pixmap blits are GPU-fast.
-    // Map the logical damage rect into backdrop device pixels (the pixmap carries
-    // the dpr) and blit just that sub-rect to its matching destination.
+    // Draw the WHOLE backdrop at the origin (DPR-aware); the clip rect set above
+    // restricts the actual paint to the damaged band, so a partial repaint stays
+    // cheap. NOTE: do NOT hand-compute a device-pixel source sub-rect — passing
+    // `damage * dpr` as drawPixmap's source read from the wrong part of the Retina
+    // backdrop whenever the damage rect was away from the origin (a partial repaint
+    // while shrinking the selection), which made the dimmed area show the captured
+    // frame shifted. Drawing the full pixmap at (0,0) is always positionally exact.
     ensureBackdrop();
     if (!m_backdrop.isNull()) {
-        const qreal dpr = m_backdrop.devicePixelRatio();
-        QRectF srcPx(damage.x() * dpr, damage.y() * dpr,
-                     damage.width() * dpr, damage.height() * dpr);
-        p.drawPixmap(QRectF(damage), m_backdrop, srcPx);
+        p.drawPixmap(0, 0, m_backdrop);
     }
 
     // drawDim already builds an even-odd path covering rect() with the selection
@@ -891,16 +905,26 @@ void OverlayWindow::endCustomCursorDrag() {
     m_cursorRectsDisabled = false;
 }
 
-// Clamp QCursor::pos to this screen during selection so the cursor cannot fly
-// to an adjacent monitor (Qt top-left virtual-desktop coords).
+// Clamp the cursor to this screen during selection so it cannot fly to an
+// adjacent monitor.
 void OverlayWindow::confineCursorToScreen() {
     if (!m_screen) return;
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+    // On macOS QCursor::setPos() goes through CGWarp with the default local-events
+    // suppression interval, so during a fast drag the pointer still slips onto an
+    // adjacent monitor before the clamp catches it. The native helper warps via
+    // CGWarpMouseCursorPosition + re-associates the cursor (exactly like the Swift
+    // overlay), which confines reliably on multi-monitor setups.
+    extern void MacNative_confineCursorToScreen(WId win);  // implemented in MacNative.mm
+    MacNative_confineCursorToScreen(winId());
+#else
     const QRect b = m_screen->geometry();
     QPoint cur = QCursor::pos();
     QPoint p = cur;
     p.setX(std::min(std::max(b.left() + 1, p.x()), b.right() - 2));
     p.setY(std::min(std::max(b.top() + 1, p.y()), b.bottom() - 2));
     if (p != cur) QCursor::setPos(p);
+#endif
 }
 
 // ============================================================================
@@ -984,6 +1008,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
             m_selection.reset();
             hideToolbar();
             m_dragMode = DragMode::NewSelection;
+            beginCustomCursorDrag();   // confine the pointer to this screen
             emit beganSelection();
         } else if (m_tool == Tool::Text) {
             // ----- text mouse-down (mirrors handleTextMouseDown) -----
@@ -1054,6 +1079,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
         }
     } else {
         m_dragMode = DragMode::NewSelection;
+        beginCustomCursorDrag();   // confine the pointer to this screen
         emit beganSelection();
     }
     // Seed the dirty-rect cache with the gesture's pre-move bounds (null for a

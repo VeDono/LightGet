@@ -250,5 +250,13 @@ int main(int argc, char** argv) {
     TrayApp tray;
     tray.start();   // build tray, register hotkey (applicationDidFinishLaunching)
 
+    // macOS: install a standard Edit menu so the system Emoji & Symbols panel
+    // (⌃⌘Space) works while editing a text annotation. No-op elsewhere / without
+    // the native shim.
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+    extern void MacNative_installEditMenu();
+    MacNative_installEditMenu();
+#endif
+
     return app.exec();
 }

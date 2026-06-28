@@ -46,6 +46,14 @@ void OverlayWindow_applyShieldLevel(WId win) {
     NSWindow* window = [view window];
     if (window == nil) return;
 
+    // Make sure the shield overlay can never be resized by the user. A frameless
+    // top-level NSWindow is created with NSWindowStyleMaskResizable, and macOS
+    // allows edge-drag resizing of a resizable borderless window even though it
+    // has no visible border — letting the user shrink the overlay and scale the
+    // frozen screenshot into it. Clear the bit so the edges are inert. (Qt also
+    // drops it when the widget is given a fixed size; this re-asserts it here.)
+    [window setStyleMask:([window styleMask] & ~NSWindowStyleMaskResizable)];
+
     [window setLevel:(NSInteger)CGShieldingWindowLevel()];
     [window setCollectionBehavior:(NSWindowCollectionBehaviorCanJoinAllSpaces |
                                    NSWindowCollectionBehaviorStationary |
@@ -91,6 +99,47 @@ void OverlayWindow_disableShowAnimation(WId win) {
     if (window == nil) return;
 
     [window setAnimationBehavior:NSWindowAnimationBehaviorNone];
+}
+
+// ---------------------------------------------------------------------------
+// MacNative_confineCursorToScreen — clamp the hardware cursor to the display the
+// overlay window lives on, so a selection/resize drag cannot drag the pointer
+// onto an adjacent monitor.
+//
+// Qt's QCursor::setPos() routes through CGWarpMouseCursorPosition but leaves the
+// default ~0.25s "local events suppression interval" in place, so during a fast
+// drag the OS keeps delivering the pre-warp motion and the cursor visibly slips
+// onto the neighbouring screen before the clamp settles. We replicate the Swift
+// overlay's approach instead: read the true CG cursor location, clamp it to the
+// window's display bounds (CG top-left global coords), warp, and immediately
+// re-associate the mouse so movement stays in sync. This confines reliably.
+// Same WId->NSView->NSWindow climb and nil guards as the helpers above.
+// ---------------------------------------------------------------------------
+void MacNative_confineCursorToScreen(WId win) {
+    if (win == 0) return;
+    NSView* view = (__bridge NSView*)reinterpret_cast<void*>(win);
+    if (![view isKindOfClass:[NSView class]]) return;
+    NSWindow* window = [view window];
+    if (window == nil) return;
+    NSScreen* screen = [window screen];
+    if (screen == nil) return;
+    NSNumber* num = screen.deviceDescription[@"NSScreenNumber"];
+    if (num == nil) return;
+    CGDirectDisplayID display = (CGDirectDisplayID)[num unsignedIntValue];
+    CGRect b = CGDisplayBounds(display);
+
+    CGEventRef ev = CGEventCreate(NULL);
+    if (ev == NULL) return;
+    CGPoint cur = CGEventGetLocation(ev);
+    CFRelease(ev);
+
+    CGPoint p = cur;
+    p.x = MIN(MAX(b.origin.x + 1.0, p.x), b.origin.x + b.size.width - 2.0);
+    p.y = MIN(MAX(b.origin.y + 1.0, p.y), b.origin.y + b.size.height - 2.0);
+    if (p.x != cur.x || p.y != cur.y) {
+        CGWarpMouseCursorPosition(p);
+        CGAssociateMouseAndMouseCursorPosition(true);   // keep cursor in sync
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -188,4 +237,47 @@ bool MacNative_setLaunchAtLogin(bool enabled) {
         return ok ? true : false;
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// MacNative_installEditMenu — give the (LSUIElement) app a standard Edit menu so
+// macOS routes the system "Emoji & Symbols" panel (⌃⌘Space) to the focused text
+// field while annotating a screenshot. Without an Edit menu carrying
+// orderFrontCharacterPalette: the shortcut is a no-op for an accessory app. The
+// standard edit items target the first responder (Qt's text view);
+// orderFrontCharacterPalette: is handled by NSApplication itself, so the emoji
+// item works regardless of which widget has focus.
+// ---------------------------------------------------------------------------
+void MacNative_installEditMenu() {
+    @autoreleasepool {
+        NSApplication* app = [NSApplication sharedApplication];
+        NSMenu* mainMenu = [[NSMenu alloc] init];
+
+        // (1) Application menu — the first submenu; required for a valid menu bar.
+        NSMenuItem* appItem = [[NSMenuItem alloc] init];
+        [mainMenu addItem:appItem];
+        NSMenu* appMenu = [[NSMenu alloc] init];
+        [appMenu addItemWithTitle:@"Quit LightGet"
+                           action:@selector(terminate:)
+                    keyEquivalent:@"q"];
+        [appItem setSubmenu:appMenu];
+
+        // (2) Edit menu — ONLY the Emoji & Symbols panel. We deliberately do NOT
+        // add Cut/Copy/Paste/Undo/Redo here: their ⌘X/⌘C/⌘V/⌘Z key-equivalents
+        // would be claimed by the menu and shadow the overlay's own shortcuts
+        // (⌘C/⌘X copy the screenshot, ⌘Z undoes an annotation). ⌃⌘Space for the
+        // character palette conflicts with nothing, and orderFrontCharacterPalette:
+        // is handled by NSApplication, so the item is always live.
+        NSMenuItem* editItem = [[NSMenuItem alloc] init];
+        [mainMenu addItem:editItem];
+        NSMenu* editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+        NSMenuItem* emoji = [[NSMenuItem alloc] initWithTitle:@"Emoji & Symbols"
+                                                       action:@selector(orderFrontCharacterPalette:)
+                                                keyEquivalent:@" "];
+        [emoji setKeyEquivalentModifierMask:(NSEventModifierFlagControl | NSEventModifierFlagCommand)];
+        [editMenu addItem:emoji];
+        [editItem setSubmenu:editMenu];
+
+        [app setMainMenu:mainMenu];
+    }
 }

@@ -410,6 +410,15 @@ void TrayApp::startCapture() {
     // overlays exist, so a second trigger cannot create a second set.
     if (m_overlayShown || m_isCapturing) return;
 
+    // Tear the status-item menu down synchronously before grabbing pixels or
+    // showing the shield. When a capture is launched from the tray menu the menu
+    // popup is still on screen as triggered() fires; hiding it now keeps the
+    // translucent popup out of the grabbed screenshot AND removes the transient
+    // popup window that otherwise races the overlay's app-activation on the very
+    // first capture (the "first menu capture does nothing" bug). Harmless no-op
+    // for the hotkey path (no menu is open) and off macOS.
+    if (m_menu) m_menu->hide();
+
     // No Screen Recording permission -> show ONLY the system prompt (no
     // duplicate message of our own) and bail. No-op / true off macOS.
     if (!ScreenCapture::preflightPermission()) {
@@ -475,8 +484,29 @@ void TrayApp::startCapture() {
 
     // Defeat a hidden cursor (e.g. a UE5 game): force it visible now and again
     // on the next tick to win any race with the window server / the game.
+    //
+    // The same next-tick pass ALSO re-asserts the active overlay's shield level +
+    // key/active state. The very first capture launched from the status-item menu
+    // can land while the app is not yet frontmost (an LSUIElement accessory app is
+    // not active on a mere menu click) and/or while the just-dismissed popup is
+    // still being torn down, so the initial activateIgnoringOtherApps +
+    // makeKeyAndOrderFront (in applyShieldLevel) gets dropped and the overlay never
+    // becomes key — i.e. the first menu capture appears to do nothing. Re-running
+    // applyShieldLevel() + focus on the next event-loop turn (a clean context, the
+    // menu fully gone) self-heals that miss without needing a second click. Only
+    // the cursor overlay is re-asserted, so multi-monitor keyboard focus still
+    // lands on the screen under the pointer. m_overlays.contains() guards against
+    // the gesture having already finished (overlays torn down) before the tick.
     forceCursorVisible();
-    QTimer::singleShot(0, this, [this]() { forceCursorVisible(); });
+    QTimer::singleShot(0, this, [this, active]() {
+        forceCursorVisible();
+        if (active && m_overlays.contains(active)) {
+            active->applyShieldLevel();
+            active->activateWindow();
+            active->raise();
+            active->setFocus();
+        }
+    });
 
     // Overlays are up; commit the state transition: overlay != nil, not capturing.
     m_overlayShown = true;
