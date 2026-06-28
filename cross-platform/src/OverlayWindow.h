@@ -43,6 +43,7 @@ class QVariantAnimation;
 
 class ToolbarView;
 class TextInspectorView;
+class TextPanel;
 class QTextEdit;
 class QWidget;
 class QPushButton;
@@ -166,9 +167,20 @@ private:
     void cancelTextEditing();                         // endTextEditing(commit=false)
     void endTextEditing(bool commit);
 
-    // ----- Text inspector (Spec 3 §11.11) -----
-    void updateTextInspector();
-    void positionTextInspector(const Annotation& a);
+    // ----- Text panel (unified design "Text" panel; replaces inspector) -----
+    void updateTextInspector();          // (kept name) -> manages m_textPanel
+    void positionTextInspector(const Annotation& a);   // legacy; unused
+    void positionTextPanel();            // above the editor / selected text block
+    void applyEditorStyle();             // push current style state into the editor
+    // Live handlers wired to the TextPanel signals (apply to editor or selection).
+    void onTextFontFamily(const QString& family);
+    void onTextFontSize(int pt);
+    void onTextBold(bool on);
+    void onTextItalic(bool on);
+    void onTextUnderline(bool on);
+    void onTextColor(const QColor& c);
+    void onTextBg(const std::optional<QColor>& c);
+    void onTextDone();
 
     // ----- Output (Spec 3 §12) -----
     QImage renderOutput() const;                      // crop+scale; nullptr if too small
@@ -208,10 +220,17 @@ private:
     std::optional<int> m_activeTextIndex;    // selected text (shows frame+handles)
     int m_editingIndex = -1;                 // index being edited inline; -1 = new text
     QTextEdit* m_textEditor = nullptr;
-    TextInspectorView* m_textInspector = nullptr;
-    QWidget* m_editControls = nullptr;       // ✓/✗ container
-    QWidget* m_alignControls = nullptr;      // alignment container
+    TextPanel* m_textPanel = nullptr;        // unified "Text" panel (design)
+    QWidget* m_editControls = nullptr;       // (legacy, unused) ✓/✗ container
+    QWidget* m_alignControls = nullptr;      // (legacy, unused) alignment container
     TextAlign m_currentTextAlignment = TextAlign::Left;
+    // Current text-style state while editing (mirrors the edited annotation).
+    QString m_currentFontFamily;
+    qreal   m_currentFontSize = 18.0;
+    bool    m_currentBold = false;
+    bool    m_currentItalic = false;
+    bool    m_currentUnderline = false;
+    std::optional<QColor> m_currentBg;       // applied to the annotation on commit
     // PRIVATE additions (Qt-specific): alignment buttons for live highlight,
     // and a guard so the editor's focus-out commit does not re-enter while we
     // are tearing the editor down.

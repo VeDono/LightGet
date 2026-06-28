@@ -36,10 +36,12 @@
 #include <QColor>
 #include <QVector>
 #include <QHash>
+#include <QPointer>
 #include <optional>
 
 class QPushButton;
 class QLabel;
+class QHBoxLayout;
 
 // The 6 palette colors, identical order in both panels (Spec 4 §1.5).
 // 0 red, 1 green, 2 blue, 3 yellow, 4 black, 5 white. Default selected = 0 (red).
@@ -136,4 +138,66 @@ private:
     QVector<QPair<QColor, QPushButton*>> m_textSwatches;
     // bgSwatches[0] is the "none" swatch (color == nullopt); palette color j -> index j+1.
     QVector<QPair<std::optional<QColor>, QPushButton*>> m_bgSwatches;
+};
+
+// ---------------------------------------------------------------------------
+// TextPanel — the unified contextual "Text" panel from the design: ONE dark
+// floating pill above the text block with font ▾ · size −/+ · B I U · alignment ·
+// A-color · marker(bg) · ✓ Done. Each group appears only if its Settings toggle
+// is enabled (Features tab). A-color / marker open a small swatch popup. Emits a
+// high-level signal per change; the owner (OverlayWindow) applies it live to the
+// inline editor / selected annotation. Replaces the old ✓/✗ + alignment controls
+// + TextInspectorView.
+// ---------------------------------------------------------------------------
+class TextPanel : public QWidget {
+    Q_OBJECT
+public:
+    explicit TextPanel(QWidget* parent = nullptr);
+    ~TextPanel() override;
+
+    // Rebuild the controls honoring the Features-tab text-option toggles, then
+    // reflect the given state. Call when (re)showing the panel.
+    void setState(const QString& family, int size, bool bold, bool italic,
+                  bool underline, TextAlign align, const QColor& color,
+                  const std::optional<QColor>& bg);
+
+signals:
+    void fontFamilyChanged(const QString& family);   // "" = system default
+    void fontSizeChanged(int pt);
+    void boldChanged(bool on);
+    void italicChanged(bool on);
+    void underlineChanged(bool on);
+    void alignChanged(TextAlign a);
+    void textColorChanged(const QColor& c);
+    void bgColorChanged(const std::optional<QColor>& c);   // nullopt = no background
+    void doneClicked();
+
+protected:
+    void paintEvent(QPaintEvent*) override;          // rounded dark pill bg
+
+private:
+    void rebuild();                                  // (re)build per Settings toggles
+    void refreshVisualState();                       // sync button looks to m_*
+    void openColorPopup(bool background, QWidget* anchor);
+    void closeColorPopup();
+
+    // Current state (mirrors the edited annotation).
+    QString m_family;
+    int     m_size = 18;
+    bool    m_bold = false, m_italic = false, m_underline = false;
+    TextAlign m_align = TextAlign::Left;
+    QColor  m_color = QColor(255, 59, 48);
+    std::optional<QColor> m_bg;
+
+    // Control handles kept for restyling on state change.
+    QHBoxLayout* m_row = nullptr;
+    QPushButton* m_fontBtn = nullptr;
+    QLabel*      m_sizeLabel = nullptr;
+    QPushButton* m_boldBtn = nullptr;
+    QPushButton* m_italicBtn = nullptr;
+    QPushButton* m_underlineBtn = nullptr;
+    QVector<QPair<TextAlign, QPushButton*>> m_alignBtns;
+    QPushButton* m_colorBtn = nullptr;
+    QPushButton* m_markerBtn = nullptr;
+    QPointer<QWidget> m_colorPopup;   // child of the overlay; auto-nulls on delete
 };

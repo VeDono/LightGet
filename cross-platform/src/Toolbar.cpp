@@ -16,6 +16,10 @@
 
 #include <QPushButton>
 #include <QLabel>
+#include <QHBoxLayout>
+#include <QFrame>
+#include <QMenu>
+#include <QAction>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
@@ -303,6 +307,68 @@ QIcon makeSwatch(const QColor& color, bool selected, int d = 26) {
         const QRectF ring = disc.adjusted(0.5, 0.5, -0.5, -0.5);
         p.drawEllipse(ring);
     }
+    p.end();
+    return QIcon(pm);
+}
+
+// Small stroked icons for the Text panel (design 24x24 viewBox), in `color`.
+QIcon makeTextIcon(const QString& name, const QColor& color, int size) {
+    const qreal dpr = 2.0;
+    QPixmap pm(int(size * dpr), int(size * dpr));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const qreal sc = size / 24.0;
+    auto PT = [&](qreal x, qreal y) { return QPointF(x * sc, y * sc); };
+    QPen pen(color, 1.9 * sc, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    if (name == "align.left") {
+        p.drawLine(PT(4, 7), PT(20, 7)); p.drawLine(PT(4, 12), PT(14, 12)); p.drawLine(PT(4, 17), PT(17, 17));
+    } else if (name == "align.center") {
+        p.drawLine(PT(4, 7), PT(20, 7)); p.drawLine(PT(7, 12), PT(17, 12)); p.drawLine(PT(5, 17), PT(19, 17));
+    } else if (name == "align.right") {
+        p.drawLine(PT(4, 7), PT(20, 7)); p.drawLine(PT(10, 12), PT(20, 12)); p.drawLine(PT(6, 17), PT(20, 17));
+    } else if (name == "minus") {
+        QPen mp(color, 2.4 * sc, Qt::SolidLine, Qt::RoundCap); p.setPen(mp);
+        p.drawLine(PT(6, 12), PT(18, 12));
+    } else if (name == "plus") {
+        QPen mp(color, 2.4 * sc, Qt::SolidLine, Qt::RoundCap); p.setPen(mp);
+        p.drawLine(PT(12, 6), PT(12, 18)); p.drawLine(PT(6, 12), PT(18, 12));
+    } else if (name == "check") {
+        QPen cp(color, 2.2 * sc, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin); p.setPen(cp);
+        QPainterPath ck; ck.moveTo(PT(5, 12.5)); ck.lineTo(PT(10, 17.5)); ck.lineTo(PT(19, 6.5)); p.drawPath(ck);
+    } else if (name == "chevron.down") {
+        QPen cp(color, 2.0 * sc, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin); p.setPen(cp);
+        QPainterPath ch; ch.moveTo(PT(7, 10)); ch.lineTo(PT(12, 15)); ch.lineTo(PT(17, 10)); p.drawPath(ch);
+    } else if (name == "marker") {
+        p.drawLine(PT(4, 20), PT(20, 20));
+        QPainterPath h; h.moveTo(PT(7, 15)); h.lineTo(PT(15, 7)); h.lineTo(PT(18, 10)); h.lineTo(PT(10, 18)); h.closeSubpath();
+        p.drawPath(h);
+    }
+    p.end();
+    return QIcon(pm);
+}
+
+// "A" with a colored underline bar — the Text-panel text-color button (design).
+QIcon makeColorAIcon(const QColor& underline, const QColor& glyph, int size) {
+    const qreal dpr = 2.0;
+    QPixmap pm(int(size * dpr), int(size * dpr));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(glyph);
+    QFont f = p.font();
+    f.setPixelSize(int(size * 0.62));
+    f.setWeight(QFont::Bold);
+    p.setFont(f);
+    p.drawText(QRectF(0, -size * 0.10, size, size), Qt::AlignCenter, QStringLiteral("A"));
+    p.setPen(Qt::NoPen);
+    p.setBrush(underline);
+    const qreal bw = size * 0.62, bh = std::max<qreal>(2.0, size * 0.13);
+    p.drawRoundedRect(QRectF((size - bw) / 2.0, size * 0.80, bw, bh), bh / 2.0, bh / 2.0);
     p.end();
     return QIcon(pm);
 }
@@ -799,4 +865,320 @@ void TextInspectorView::paintEvent(QPaintEvent*) {
     p.setPen(QPen(kPanelBorder, 1.0));
     p.setBrush(kPanelSurface);
     p.drawRoundedRect(r, kPanelRadiusInspector, kPanelRadiusInspector);
+}
+
+// ===========================================================================
+// TextPanel — unified contextual "Text" panel (design §2/§3)
+// ===========================================================================
+static QString cssCol(const QColor& c) {
+    return QStringLiteral("rgba(%1,%2,%3,%4)")
+        .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha());
+}
+
+TextPanel::TextPanel(QWidget* parent) : QWidget(parent) {
+    setFocusPolicy(Qt::NoFocus);
+    setCursor(Qt::ArrowCursor);
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    m_row = new QHBoxLayout(this);
+    m_row->setContentsMargins(8, 6, 8, 6);
+    m_row->setSpacing(2);
+    rebuild();
+}
+
+TextPanel::~TextPanel() { closeColorPopup(); }
+
+void TextPanel::paintEvent(QPaintEvent*) {
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    p.setPen(QPen(kPanelBorder, 1.0));
+    p.setBrush(kPanelSurface);
+    p.drawRoundedRect(r, 13, 13);   // design panel radius
+}
+
+void TextPanel::rebuild() {
+    closeColorPopup();
+    QLayoutItem* item;
+    while ((item = m_row->takeAt(0)) != nullptr) {
+        if (QWidget* w = item->widget()) w->deleteLater();
+        delete item;
+    }
+    m_fontBtn = nullptr; m_sizeLabel = nullptr;
+    m_boldBtn = m_italicBtn = m_underlineBtn = nullptr;
+    m_alignBtns.clear(); m_colorBtn = m_markerBtn = nullptr;
+
+    Settings& s = Settings::instance();
+    const QColor glyph(0xd4, 0xd5, 0xda);
+
+    auto addDivider = [&]() {
+        auto* d = new QFrame(this);
+        d->setFixedSize(1, 22);
+        d->setStyleSheet(QStringLiteral("background:%1;border:none;").arg(cssCol(kSeparator)));
+        m_row->addSpacing(2);
+        m_row->addWidget(d, 0, Qt::AlignVCenter);
+        m_row->addSpacing(2);
+    };
+    auto flatBtn = [&](int w, int h) {
+        auto* b = new QPushButton(this);
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFixedSize(w, h);
+        b->setStyleSheet(QStringLiteral(
+            "QPushButton{border:none;border-radius:8px;background:transparent;}"
+            "QPushButton:hover{background:%1;}").arg(cssCol(kHoverFill)));
+        return b;
+    };
+
+    // --- Font dropdown ---
+    if (s.textFontEnabled()) {
+        m_fontBtn = new QPushButton(this);
+        m_fontBtn->setFocusPolicy(Qt::NoFocus);
+        m_fontBtn->setCursor(Qt::PointingHandCursor);
+        m_fontBtn->setFixedHeight(30);
+        m_fontBtn->setLayoutDirection(Qt::RightToLeft);   // chevron right of the label
+        m_fontBtn->setIcon(makeTextIcon("chevron.down", glyph, 11));
+        m_fontBtn->setIconSize(QSize(11, 11));
+        m_fontBtn->setStyleSheet(QStringLiteral(
+            "QPushButton{border:none;border-radius:8px;background:transparent;color:%1;"
+            "padding:0 8px;font-size:13px;}"
+            "QPushButton:hover{background:%2;}").arg(cssCol(glyph), cssCol(kHoverFill)));
+        auto* menu = new QMenu(m_fontBtn);
+        struct F { const char* label; const char* fam; };
+        static const F fonts[] = {
+            {"System", ""}, {"Helvetica Neue", "Helvetica Neue"}, {"Arial", "Arial"},
+            {"Georgia", "Georgia"}, {"Times New Roman", "Times New Roman"},
+            {"Courier New", "Courier New"}, {"Menlo", "Menlo"},
+        };
+        for (const F& f : fonts) {
+            const QString fam = QString::fromLatin1(f.fam);
+            QAction* act = menu->addAction(QString::fromLatin1(f.label));
+            connect(act, &QAction::triggered, this, [this, fam]() {
+                m_family = fam; refreshVisualState(); emit fontFamilyChanged(fam);
+            });
+        }
+        connect(m_fontBtn, &QPushButton::clicked, this, [this, menu]() {
+            menu->popup(m_fontBtn->mapToGlobal(QPoint(0, m_fontBtn->height() + 4)));
+        });
+        m_row->addWidget(m_fontBtn, 0, Qt::AlignVCenter);
+        addDivider();
+    }
+
+    // --- Size stepper (− 17 +) ---
+    if (s.textFontSizeEnabled()) {
+        auto* minus = flatBtn(26, 28);
+        minus->setIcon(makeTextIcon("minus", glyph, 15));
+        minus->setIconSize(QSize(15, 15));
+        connect(minus, &QPushButton::clicked, this, [this]() {
+            m_size = qMax(8, m_size - 1); refreshVisualState(); emit fontSizeChanged(m_size);
+        });
+        m_sizeLabel = new QLabel(this);
+        m_sizeLabel->setAlignment(Qt::AlignCenter);
+        m_sizeLabel->setMinimumWidth(20);
+        m_sizeLabel->setStyleSheet(
+            "color:white;background:transparent;font-family:'SF Mono',Menlo,monospace;"
+            "font-weight:600;font-size:13px;");
+        auto* plus = flatBtn(26, 28);
+        plus->setIcon(makeTextIcon("plus", glyph, 15));
+        plus->setIconSize(QSize(15, 15));
+        connect(plus, &QPushButton::clicked, this, [this]() {
+            m_size = qMin(400, m_size + 1); refreshVisualState(); emit fontSizeChanged(m_size);
+        });
+        m_row->addWidget(minus, 0, Qt::AlignVCenter);
+        m_row->addWidget(m_sizeLabel, 0, Qt::AlignVCenter);
+        m_row->addWidget(plus, 0, Qt::AlignVCenter);
+        addDivider();
+    }
+
+    // --- B / I / U ---
+    bool anyStyle = false;
+    auto makeStyleBtn = [&](const QString& text, bool ital, bool under) {
+        auto* b = new QPushButton(text, this);
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFixedSize(30, 30);
+        QFont f("Georgia");
+        f.setPixelSize(15);
+        f.setBold(true);
+        f.setItalic(ital);
+        f.setUnderline(under);
+        b->setFont(f);
+        return b;
+    };
+    if (s.textBoldEnabled()) {
+        m_boldBtn = makeStyleBtn("B", false, false);
+        connect(m_boldBtn, &QPushButton::clicked, this, [this]() {
+            m_bold = !m_bold; refreshVisualState(); emit boldChanged(m_bold);
+        });
+        m_row->addWidget(m_boldBtn, 0, Qt::AlignVCenter); anyStyle = true;
+    }
+    if (s.textItalicEnabled()) {
+        m_italicBtn = makeStyleBtn("I", true, false);
+        connect(m_italicBtn, &QPushButton::clicked, this, [this]() {
+            m_italic = !m_italic; refreshVisualState(); emit italicChanged(m_italic);
+        });
+        m_row->addWidget(m_italicBtn, 0, Qt::AlignVCenter); anyStyle = true;
+    }
+    if (s.textUnderlineEnabled()) {
+        m_underlineBtn = makeStyleBtn("U", false, true);
+        connect(m_underlineBtn, &QPushButton::clicked, this, [this]() {
+            m_underline = !m_underline; refreshVisualState(); emit underlineChanged(m_underline);
+        });
+        m_row->addWidget(m_underlineBtn, 0, Qt::AlignVCenter); anyStyle = true;
+    }
+    if (anyStyle) addDivider();
+
+    // --- Alignment segment (L / C / R) ---
+    if (s.textAlignmentEnabled()) {
+        auto* seg = new QWidget(this);
+        seg->setStyleSheet("background:rgba(255,255,255,15);border-radius:9px;");
+        auto* sh = new QHBoxLayout(seg);
+        sh->setContentsMargins(2, 2, 2, 2);
+        sh->setSpacing(0);
+        const QPair<TextAlign, const char*> aligns[] = {
+            {TextAlign::Left, "align.left"}, {TextAlign::Center, "align.center"},
+            {TextAlign::Right, "align.right"},
+        };
+        for (const auto& al : aligns) {
+            auto* b = new QPushButton(seg);
+            b->setFocusPolicy(Qt::NoFocus);
+            b->setCursor(Qt::PointingHandCursor);
+            b->setFixedSize(28, 26);
+            b->setIconSize(QSize(15, 15));
+            const TextAlign a = al.first;
+            connect(b, &QPushButton::clicked, this, [this, a]() {
+                m_align = a; refreshVisualState(); emit alignChanged(a);
+            });
+            sh->addWidget(b);
+            m_alignBtns.append({a, b});
+        }
+        m_row->addWidget(seg, 0, Qt::AlignVCenter);
+        addDivider();
+    }
+
+    // --- A-color (text color) ---
+    m_colorBtn = flatBtn(30, 30);
+    m_colorBtn->setIconSize(QSize(22, 22));
+    connect(m_colorBtn, &QPushButton::clicked, this, [this]() { openColorPopup(false, m_colorBtn); });
+    m_row->addWidget(m_colorBtn, 0, Qt::AlignVCenter);
+
+    // --- Marker (background) ---
+    if (s.textBackgroundEnabled()) {
+        m_markerBtn = flatBtn(30, 30);
+        m_markerBtn->setIcon(makeTextIcon("marker", glyph, 17));
+        m_markerBtn->setIconSize(QSize(17, 17));
+        connect(m_markerBtn, &QPushButton::clicked, this, [this]() { openColorPopup(true, m_markerBtn); });
+        m_row->addWidget(m_markerBtn, 0, Qt::AlignVCenter);
+    }
+    addDivider();
+
+    // --- Done (✓) ---
+    auto* done = new QPushButton(this);
+    done->setFocusPolicy(Qt::NoFocus);
+    done->setCursor(Qt::PointingHandCursor);
+    done->setFixedSize(34, 30);
+    done->setIcon(makeTextIcon("check", Qt::white, 17));
+    done->setIconSize(QSize(17, 17));
+    done->setStyleSheet(QStringLiteral(
+        "QPushButton{border:none;border-radius:8px;background:%1;}"
+        "QPushButton:hover{background:#0b76e0;}").arg(cssCol(kSelectedBlue)));
+    connect(done, &QPushButton::clicked, this, [this]() { emit doneClicked(); });
+    m_row->addWidget(done, 0, Qt::AlignVCenter);
+
+    refreshVisualState();
+    adjustSize();
+}
+
+void TextPanel::refreshVisualState() {
+    const QColor glyph(0xd4, 0xd5, 0xda);
+    if (m_fontBtn)
+        m_fontBtn->setText(m_family.isEmpty() ? QStringLiteral("System") : m_family);
+    if (m_sizeLabel) m_sizeLabel->setText(QString::number(m_size));
+
+    auto styleToggle = [&](QPushButton* b, bool on) {
+        if (!b) return;
+        b->setStyleSheet(QStringLiteral(
+            "QPushButton{border:none;border-radius:8px;color:%1;background:%2;}"
+            "QPushButton:hover{background:%3;}")
+            .arg(on ? QStringLiteral("#ffffff") : cssCol(glyph),
+                 on ? cssCol(QColor(255, 255, 255, 30)) : QStringLiteral("transparent"),
+                 cssCol(kHoverFill)));
+    };
+    styleToggle(m_boldBtn, m_bold);
+    styleToggle(m_italicBtn, m_italic);
+    styleToggle(m_underlineBtn, m_underline);
+
+    for (const auto& pr : m_alignBtns) {
+        const bool on = (pr.first == m_align);
+        const char* nm = pr.first == TextAlign::Left ? "align.left"
+                       : pr.first == TextAlign::Center ? "align.center" : "align.right";
+        pr.second->setIcon(makeTextIcon(nm, on ? QColor(Qt::white) : glyph, 15));
+        pr.second->setStyleSheet(QStringLiteral(
+            "QPushButton{border:none;border-radius:7px;background:%1;}")
+            .arg(on ? cssCol(kSelectedBlue) : QStringLiteral("transparent")));
+    }
+    if (m_colorBtn) m_colorBtn->setIcon(makeColorAIcon(m_color, Qt::white, 22));
+    update();
+}
+
+void TextPanel::setState(const QString& family, int size, bool bold, bool italic,
+                         bool underline, TextAlign align, const QColor& color,
+                         const std::optional<QColor>& bg) {
+    m_family = family; m_size = size; m_bold = bold; m_italic = italic;
+    m_underline = underline; m_align = align; m_color = color; m_bg = bg;
+    refreshVisualState();
+}
+
+void TextPanel::closeColorPopup() {
+    if (m_colorPopup) { m_colorPopup->deleteLater(); m_colorPopup = nullptr; }
+}
+
+void TextPanel::openColorPopup(bool background, QWidget* anchor) {
+    closeColorPopup();
+    QWidget* host = parentWidget();
+    if (!host || !anchor) return;
+    auto* pop = new QWidget(host);
+    pop->setObjectName("cpop");
+    pop->setStyleSheet(QStringLiteral(
+        "#cpop{background:%1;border:1px solid %2;border-radius:11px;}")
+        .arg(cssCol(kPanelSurface), cssCol(kPanelBorder)));
+    auto* h = new QHBoxLayout(pop);
+    h->setContentsMargins(10, 8, 10, 8);
+    h->setSpacing(8);
+
+    auto addSwatch = [&](std::optional<QColor> c) {
+        auto* b = new QPushButton(pop);
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFixedSize(24, 24);
+        b->setIconSize(QSize(24, 24));
+        b->setStyleSheet("QPushButton{border:none;background:transparent;}");
+        if (!c.has_value()) {
+            b->setIcon(makeGlyph(QStringLiteral("nosign"), QColor(0xff, 0x69, 0x61), 24));
+        } else {
+            const bool sel = background ? (m_bg && Palette::sameColor(*m_bg, *c))
+                                        : Palette::sameColor(m_color, *c);
+            b->setIcon(makeSwatch(*c, sel, 24));
+        }
+        connect(b, &QPushButton::clicked, this, [this, background, c]() {
+            if (background) { m_bg = c; emit bgColorChanged(c); }
+            else if (c.has_value()) { m_color = *c; emit textColorChanged(*c); }
+            refreshVisualState();
+            closeColorPopup();
+        });
+        h->addWidget(b);
+    };
+
+    if (background) addSwatch(std::nullopt);
+    for (const QColor& c : Palette::colors()) addSwatch(c);
+
+    pop->adjustSize();
+    const QPoint a = anchor->mapTo(host, QPoint(anchor->width() / 2, anchor->height()));
+    int x = a.x() - pop->width() / 2;
+    int y = a.y() + 6;
+    x = qBound(0, x, qMax(0, host->width() - pop->width()));
+    y = qBound(0, y, qMax(0, host->height() - pop->height()));
+    pop->move(x, y);
+    pop->show();
+    pop->raise();
+    m_colorPopup = pop;
 }

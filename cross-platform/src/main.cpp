@@ -151,6 +151,25 @@ bool dumpToolbar(const QString& dir, const QString& theme, bool dark) {
     return pm.toImage().save(path, "PNG");
 }
 
+// Grab the unified "Text" panel (design §2/§3). It paints its own dark pill; we
+// seed a representative state (bold on, size 17, red text) so the dump exercises
+// every control group (font / size / B-I-U / align / colour / marker / done).
+bool dumpTextPanel(const QString& dir, const QString& theme, bool dark) {
+    QApplication::setPalette(dark ? makeDarkPalette() : makeLightPalette());
+    if (auto* hints = QGuiApplication::styleHints())
+        hints->setColorScheme(dark ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light);
+    TextPanel tp;
+    tp.setState(QString(), 17, /*bold=*/true, /*italic=*/false, /*underline=*/false,
+                TextAlign::Left, QColor(255, 59, 48), std::nullopt);
+    tp.ensurePolished();
+    tp.adjustSize();
+    QApplication::processEvents();
+    const QString path =
+        QDir(dir).filePath(QStringLiteral("current_textpanel_%1.png").arg(theme));
+    const QPixmap pm = tp.grab();
+    return pm.toImage().save(path, "PNG");
+}
+
 // Drive all dumps; returns process exit code (0 = all saved).
 int runRenderDump(const QString& dir) {
     QDir().mkpath(dir);
@@ -161,6 +180,8 @@ int runRenderDump(const QString& dir) {
     ok &= dumpOne(dir, QStringLiteral("dark"),  /*dark=*/true,  /*tab=*/1);
     ok &= dumpToolbar(dir, QStringLiteral("light"), /*dark=*/false);
     ok &= dumpToolbar(dir, QStringLiteral("dark"),  /*dark=*/true);
+    ok &= dumpTextPanel(dir, QStringLiteral("light"), /*dark=*/false);
+    ok &= dumpTextPanel(dir, QStringLiteral("dark"),  /*dark=*/true);
     return ok ? 0 : 1;
 }
 

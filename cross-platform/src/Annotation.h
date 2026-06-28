@@ -78,4 +78,11 @@ struct Annotation {
     std::optional<QColor> bgColor;      // text background; nullopt = NO background rect
                                         // at all (NOT transparent black).
     TextAlign alignment = TextAlign::Left;
+
+    // Text styling (design "Text" panel): font family (empty = system default),
+    // and bold / italic / underline. Applied via fontForAnnotation() everywhere.
+    QString fontFamily;                 // "" = system default; else family name
+    bool bold = false;
+    bool italic = false;
+    bool underline = false;
 };

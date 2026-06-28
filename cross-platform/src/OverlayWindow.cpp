@@ -30,6 +30,7 @@
 #include <QTextDocument>
 #include <QTextCursor>
 #include <QTextBlockFormat>
+#include <QTextCharFormat>
 #include <QPushButton>
 #include <QPixmap>
 #include <QIcon>
@@ -135,7 +136,7 @@ void OverlayWindow::clearSelectionState() {
     if (m_editControls) { m_editControls->deleteLater(); m_editControls = nullptr; }
     if (m_alignControls) { m_alignControls->deleteLater(); m_alignControls = nullptr; }
     m_alignButtons.clear();
-    if (m_textInspector) { m_textInspector->deleteLater(); m_textInspector = nullptr; }
+    if (m_textPanel) { m_textPanel->deleteLater(); m_textPanel = nullptr; }
     m_selection.reset();
     m_annotations.clear();
     m_current.reset();
@@ -219,9 +220,22 @@ QRectF OverlayWindow::resized(const QRectF& start, Handle h, const QPointF& p) c
 // Text geometry helpers (Spec 3 §4.4) — all in local (unrotated) coords.
 // ============================================================================
 
+// Build the QFont for a text annotation: family (empty = system default), point
+// size, and the bold / italic / underline flags from the design "Text" panel.
+// Shared by measuring (textSize), rendering (drawTextAnnotation) and the inline
+// editor so they always agree.
+static QFont fontForAnnotation(const Annotation& a) {
+    QFont f;
+    if (!a.fontFamily.isEmpty()) f.setFamily(a.fontFamily);
+    f.setPointSizeF(a.fontSize);
+    f.setBold(a.bold);
+    f.setItalic(a.italic);
+    f.setUnderline(a.underline);
+    return f;
+}
+
 QSizeF OverlayWindow::textSize(const Annotation& a) const {
-    QFont font;
-    font.setPointSizeF(a.fontSize);
+    QFont font = fontForAnnotation(a);
     // Placeholder string used only for measuring an empty annotation (matches the
     // Swift hardcoded "Текст" literal — same glyph width for the min-size clamp).
     const QString s = a.text.isEmpty() ? QString::fromUtf8("Текст") : a.text;
@@ -606,8 +620,7 @@ void OverlayWindow::drawArrow(QPainter& p, const QPointF& from, const QPointF& t
 // rotation about center. NO Y-flip (Qt drawText is upright).
 void OverlayWindow::drawTextAnnotation(QPainter& p, const Annotation& a) {
     if (a.text.isEmpty()) return;
-    QFont font;
-    font.setPointSizeF(a.fontSize);
+    QFont font = fontForAnnotation(a);
     QFontMetricsF fm(font);
 
     const QStringList lines = a.text.split('\n');
@@ -1305,14 +1318,26 @@ void OverlayWindow::redoLast() {
 
 void OverlayWindow::beginTextEditingAt(const QPointF& point) {
     m_editingIndex = -1;
-    presentEditor(point, 18, m_color, QString(), m_currentTextAlignment);
-    updateTextInspector();   // hide inspector while editing
+    // New text: default style (alignment carries over from the last edit).
+    m_currentFontFamily.clear();
+    m_currentFontSize = 18.0;
+    m_currentBold = m_currentItalic = m_currentUnderline = false;
+    m_currentBg.reset();
+    presentEditor(point, m_currentFontSize, m_color, QString(), m_currentTextAlignment);
+    updateTextInspector();   // show the Text panel
 }
 
 void OverlayWindow::beginTextEditingIndex(int index) {
     const Annotation a = m_annotations[index];
     m_editingIndex = index;
     m_currentTextAlignment = a.alignment;
+    m_currentFontFamily = a.fontFamily;
+    m_currentFontSize = a.fontSize;
+    m_currentBold = a.bold;
+    m_currentItalic = a.italic;
+    m_currentUnderline = a.underline;
+    m_currentBg = a.bgColor;
+    m_color = a.color;
     presentEditor(a.start, a.fontSize, a.color, a.text, a.alignment);
     updateTextInspector();
     update();   // hide the painted version while editing
@@ -1328,8 +1353,13 @@ void OverlayWindow::presentEditor(const QPointF& origin, qreal fontSize,
     editor->setAcceptRichText(false);
 
     QFont font;
+    if (!m_currentFontFamily.isEmpty()) font.setFamily(m_currentFontFamily);
     font.setPointSizeF(fontSize);
+    font.setBold(m_currentBold);
+    font.setItalic(m_currentItalic);
+    font.setUnderline(m_currentUnderline);
     editor->setFont(font);
+    m_currentFontSize = fontSize;
 
     // background rgba(black, 0.28) ≈ alpha 71/255; text color = col.
     editor->setStyleSheet(QString("color: %1; background-color: rgba(0,0,0,71);")
@@ -1345,17 +1375,15 @@ void OverlayWindow::presentEditor(const QPointF& origin, qreal fontSize,
     editor->installEventFilter(this);
     connect(editor, &QTextEdit::textChanged, this, [this]{
         sizeFieldToFit();
-        positionEditControls();
-        positionAlignmentControls();
+        positionTextPanel();
         update();
     });
 
     editor->show();
     sizeFieldToFit();
 
-    showEditControls();
-    if (Settings::instance().textAlignmentEnabled()) showAlignmentControls();
     applyAlignmentToEditor(align);
+    updateTextInspector();   // show the unified "Text" panel above the field
 
     editor->setFocus(Qt::OtherFocusReason);
     QTextCursor tc = editor->textCursor();
@@ -1591,11 +1619,16 @@ void OverlayWindow::endTextEditing(bool commit) {
                 m_annotations.remove(idx);
                 m_activeTextIndex.reset();
             } else {
-                m_annotations[idx].text = text;         // keep rotation + bg
+                m_annotations[idx].text = text;         // keep rotation
                 m_annotations[idx].fontSize = size;
                 m_annotations[idx].color = col;
                 m_annotations[idx].start = origin;
                 m_annotations[idx].alignment = align;
+                m_annotations[idx].fontFamily = m_currentFontFamily;
+                m_annotations[idx].bold = m_currentBold;
+                m_annotations[idx].italic = m_currentItalic;
+                m_annotations[idx].underline = m_currentUnderline;
+                m_annotations[idx].bgColor = m_currentBg;
                 m_activeTextIndex = idx;
             }
         } else {
@@ -1612,6 +1645,11 @@ void OverlayWindow::endTextEditing(bool commit) {
         a.text = text;
         a.fontSize = size;
         a.alignment = align;
+        a.fontFamily = m_currentFontFamily;
+        a.bold = m_currentBold;
+        a.italic = m_currentItalic;
+        a.underline = m_currentUnderline;
+        a.bgColor = m_currentBg;
         m_annotations.append(a);
         m_redoStack.clear();
         m_activeTextIndex = m_annotations.size() - 1;
@@ -1658,48 +1696,166 @@ bool OverlayWindow::eventFilter(QObject* obj, QEvent* ev) {
 // ============================================================================
 
 void OverlayWindow::updateTextInspector() {
-    const bool show = (m_tool == Tool::Text && m_editingIndex == -1 && m_activeTextIndex &&
-                       *m_activeTextIndex < m_annotations.size() &&
-                       m_annotations[*m_activeTextIndex].tool == Tool::Text);
-    if (!show) {
-        if (m_textInspector) { m_textInspector->deleteLater(); m_textInspector = nullptr; }
+    // Unified "Text" panel: shown while EDITING text inline, OR while a committed
+    // text is SELECTED. Hidden otherwise. Replaces the old ✓/✗ + alignment
+    // controls + 2-row colour inspector with the single design panel.
+    const bool editing = (m_textEditor != nullptr);
+    const bool selected = (!editing && m_tool == Tool::Text && m_activeTextIndex &&
+                           *m_activeTextIndex < m_annotations.size() &&
+                           m_annotations[*m_activeTextIndex].tool == Tool::Text);
+    if (!editing && !selected) {
+        if (m_textPanel) { m_textPanel->deleteLater(); m_textPanel = nullptr; }
         return;
     }
-    const int idx = *m_activeTextIndex;
-    if (!m_textInspector) {
-        m_textInspector = new TextInspectorView(this);
-        connect(m_textInspector, &TextInspectorView::textColorRequested, this, [this](const QColor& c){
-            if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
-                m_annotations[*m_activeTextIndex].color = c;
-                m_color = c;
-                update();
-                updateTextInspector();
-            }
-        });
-        connect(m_textInspector, &TextInspectorView::bgColorRequested, this, [this](const std::optional<QColor>& c){
-            if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
-                m_annotations[*m_activeTextIndex].bgColor = c;
-                update();
-                updateTextInspector();
-            }
-        });
-        m_textInspector->rebuild();
-        m_textInspector->show();
+    if (!m_textPanel) {
+        m_textPanel = new TextPanel(this);
+        connect(m_textPanel, &TextPanel::fontFamilyChanged, this, &OverlayWindow::onTextFontFamily);
+        connect(m_textPanel, &TextPanel::fontSizeChanged,   this, &OverlayWindow::onTextFontSize);
+        connect(m_textPanel, &TextPanel::boldChanged,       this, &OverlayWindow::onTextBold);
+        connect(m_textPanel, &TextPanel::italicChanged,     this, &OverlayWindow::onTextItalic);
+        connect(m_textPanel, &TextPanel::underlineChanged,  this, &OverlayWindow::onTextUnderline);
+        connect(m_textPanel, &TextPanel::alignChanged,      this, &OverlayWindow::setTextAlignment);
+        connect(m_textPanel, &TextPanel::textColorChanged,  this, &OverlayWindow::onTextColor);
+        connect(m_textPanel, &TextPanel::bgColorChanged,    this, &OverlayWindow::onTextBg);
+        connect(m_textPanel, &TextPanel::doneClicked,       this, &OverlayWindow::onTextDone);
+        m_textPanel->show();
     }
-    positionTextInspector(m_annotations[idx]);
-    m_textInspector->setSelected(m_annotations[idx].color, m_annotations[idx].bgColor);
+    if (editing) {
+        m_textPanel->setState(m_currentFontFamily, int(m_currentFontSize + 0.5),
+                              m_currentBold, m_currentItalic, m_currentUnderline,
+                              m_currentTextAlignment, m_color, m_currentBg);
+    } else {
+        const Annotation& a = m_annotations[*m_activeTextIndex];
+        m_textPanel->setState(a.fontFamily, int(a.fontSize + 0.5), a.bold, a.italic,
+                              a.underline, a.alignment, a.color, a.bgColor);
+    }
+    positionTextPanel();
+    m_textPanel->raise();
 }
 
-void OverlayWindow::positionTextInspector(const Annotation& a) {
-    if (!m_textInspector) return;
-    const QRectF box = textLocalRect(a);
-    const QSize size = m_textInspector->size();
-    qreal x = box.center().x() - size.width() / 2.0;
-    qreal y = box.top() - size.height() - 10;     // above the text
-    if (y < 0) y = box.bottom() + 10;             // no room above -> below
-    x = std::min<qreal>(std::max<qreal>(0, x), width() - size.width());
-    y = std::min<qreal>(std::max<qreal>(0, y), height() - size.height());
-    m_textInspector->move(static_cast<int>(x), static_cast<int>(y));
+void OverlayWindow::positionTextInspector(const Annotation&) { positionTextPanel(); }
+
+void OverlayWindow::positionTextPanel() {
+    if (!m_textPanel) return;
+    m_textPanel->adjustSize();
+    const QSize sz = m_textPanel->size();
+    QRectF box;
+    if (m_textEditor) {
+        box = QRectF(m_textEditor->geometry());
+    } else if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
+        box = textLocalRect(m_annotations[*m_activeTextIndex]);
+    } else {
+        return;
+    }
+    qreal x = box.center().x() - sz.width() / 2.0;
+    qreal y = box.top() - sz.height() - 12;       // above the block
+    if (y < 0) y = box.bottom() + 12;             // no room above -> below
+    x = std::min<qreal>(std::max<qreal>(0, x), width() - sz.width());
+    y = std::min<qreal>(std::max<qreal>(0, y), height() - sz.height());
+    m_textPanel->move(static_cast<int>(x), static_cast<int>(y));
+}
+
+void OverlayWindow::applyEditorStyle() {
+    if (!m_textEditor) return;
+    QFont f;
+    if (!m_currentFontFamily.isEmpty()) f.setFamily(m_currentFontFamily);
+    f.setPointSizeF(m_currentFontSize);
+    f.setBold(m_currentBold);
+    f.setItalic(m_currentItalic);
+    f.setUnderline(m_currentUnderline);
+    // Apply to the whole document (so already-typed text updates) and to the
+    // widget default (so newly typed text inherits it).
+    {
+        const QSignalBlocker blocker(m_textEditor);
+        QTextCursor tc = m_textEditor->textCursor();
+        const int savedPos = tc.position();
+        tc.select(QTextCursor::Document);
+        QTextCharFormat cf;
+        cf.setFont(f);
+        tc.mergeCharFormat(cf);
+        QTextCursor restore = m_textEditor->textCursor();
+        restore.setPosition(std::min<int>(savedPos, int(m_textEditor->toPlainText().length())));
+        m_textEditor->setTextCursor(restore);
+    }
+    m_textEditor->setFont(f);
+    applyAlignmentToEditor(m_currentTextAlignment);   // refresh line pitch for new metrics
+    sizeFieldToFit();
+    positionTextPanel();
+    update();
+}
+
+void OverlayWindow::onTextFontFamily(const QString& family) {
+    m_currentFontFamily = family;
+    if (m_textEditor) { applyEditorStyle(); return; }
+    if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
+        m_annotations[*m_activeTextIndex].fontFamily = family;
+        update();
+    }
+}
+
+void OverlayWindow::onTextFontSize(int pt) {
+    m_currentFontSize = pt;
+    if (m_textEditor) { applyEditorStyle(); return; }
+    if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
+        m_annotations[*m_activeTextIndex].fontSize = pt;
+        positionTextPanel();
+        update();
+    }
+}
+
+void OverlayWindow::onTextBold(bool on) {
+    m_currentBold = on;
+    if (m_textEditor) { applyEditorStyle(); return; }
+    if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
+        m_annotations[*m_activeTextIndex].bold = on;
+        update();
+    }
+}
+
+void OverlayWindow::onTextItalic(bool on) {
+    m_currentItalic = on;
+    if (m_textEditor) { applyEditorStyle(); return; }
+    if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
+        m_annotations[*m_activeTextIndex].italic = on;
+        update();
+    }
+}
+
+void OverlayWindow::onTextUnderline(bool on) {
+    m_currentUnderline = on;
+    if (m_textEditor) { applyEditorStyle(); return; }
+    if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
+        m_annotations[*m_activeTextIndex].underline = on;
+        update();
+    }
+}
+
+void OverlayWindow::onTextColor(const QColor& c) {
+    m_color = c;
+    if (m_textEditor) {
+        m_textEditor->setStyleSheet(QString("color: %1; background-color: rgba(0,0,0,71);")
+                                        .arg(c.name(QColor::HexRgb)));
+        return;
+    }
+    if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
+        m_annotations[*m_activeTextIndex].color = c;
+        update();
+    }
+}
+
+void OverlayWindow::onTextBg(const std::optional<QColor>& c) {
+    if (m_textEditor) { m_currentBg = c; return; }   // applied to the annotation on commit
+    if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
+        m_annotations[*m_activeTextIndex].bgColor = c;
+        update();
+    }
+}
+
+void OverlayWindow::onTextDone() {
+    if (m_textEditor) { commitTextEditing(); return; }
+    m_activeTextIndex.reset();
+    updateTextInspector();
+    update();
 }
 
 // ============================================================================
