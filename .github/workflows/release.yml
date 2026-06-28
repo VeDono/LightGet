@@ -1,0 +1,273 @@
+name: Build & Release
+
+# Builds every LightGet edition and, on a version tag push, attaches the artifacts
+# to a GitHub Release.
+#
+# Both editions now live on `cpp-qt-port` (the active branch):
+#   - LightGet      (C++/Qt 6)      -> cross-platform/,        com.mrleondono.LightGet
+#   - LightGet SWFT (Swift/AppKit)  -> SnapEdit.xcodeproj,     com.mrleondono.LightGetSWFT  (deprecated)
+# Every job therefore checks out `cpp-qt-port`.
+#
+# CAVEAT: the Qt Windows/Linux hotkey/capture backends (RegisterHotKey / XGrabKey)
+# were authored on macOS; the first Windows/Linux CI runs may surface compile
+# errors in those #ifdef branches that need fixing.
+
+on:
+  workflow_dispatch:   # manual "Run workflow" -> builds all editions (no Release)
+  push:
+    tags:
+      - 'v*'           # version tag -> builds all editions AND publishes a Release
+
+permissions:
+  contents: write   # needed by softprops/action-gh-release to create/update the Release
+
+env:
+  QT_VERSION: '6.8.1'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # LightGet (Qt 6) -- macOS .app  [should be solid]
+  # ---------------------------------------------------------------------------
+  qt-macos:
+    name: Qt 6 · macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cpp-qt-port
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          cache: true
+
+      - name: Configure
+        run: >
+          cmake -S cross-platform -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DAPP_NAME="LightGet"
+          -DBUNDLE_ID="com.mrleondono.LightGet"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Deploy Qt into the .app
+        run: |
+          APP="build/LightGet.app"
+          echo "Deploying $APP"
+          macdeployqt "$APP" -verbose=1
+
+      - name: Zip
+        run: |
+          cd build
+          ditto -c -k --sequesterRsrc --keepParent "LightGet.app" "../LightGet-macOS.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LightGet-macOS
+          path: LightGet-macOS.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # LightGet (Qt 6) -- Windows x64
+  # ---------------------------------------------------------------------------
+  qt-windows:
+    name: Qt 6 · Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cpp-qt-port
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Set up MSVC environment (so the Ninja generator finds cl.exe)
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: >
+          cmake -S cross-platform -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DAPP_NAME="LightGet"
+          -DBUNDLE_ID="com.mrleondono.LightGet"
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build build --config Release 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "Build failed - surfacing error lines as annotations:"
+            Get-Content build.log |
+              Select-String -Pattern "error C|fatal error|: error|Error:|cannot open|undeclared|unresolved" |
+              Select-Object -First 40 |
+              ForEach-Object { Write-Output ("::error::" + $_.ToString().Trim()) }
+            exit 1
+          }
+
+      - name: Deploy Qt next to the .exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "build/LightGet.exe" "dist/LightGet.exe"
+          windeployqt --release "dist/LightGet.exe"
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path dist/* -DestinationPath LightGet-Windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LightGet-Windows-x64
+          path: LightGet-Windows-x64.zip
+          if-no-files-found: error
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DMyAppVersion=1.0.0" "/DDistDir=$env:GITHUB_WORKSPACE\dist" "cross-platform/packaging/windows/LightGet.iss"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LightGet-Setup-Windows-x64
+          path: cross-platform/packaging/windows/Output/LightGet-Setup-Windows-x64.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # LightGet (Qt 6) -- Linux x86_64
+  # ---------------------------------------------------------------------------
+  qt-linux:
+    name: Qt 6 · Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cpp-qt-port
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ninja-build file imagemagick \
+            libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-dev libfuse2 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxcb-xkb1 libxcb-util1
+
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          cache: true
+
+      - name: Configure
+        run: >
+          cmake -S cross-platform -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DAPP_NAME="LightGet"
+          -DBUNDLE_ID="com.mrleondono.LightGet"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      # OUTPUT_NAME is only overridden in the APPLE branch, so the Linux binary is
+      # named after the target -> build/LightGet.
+      - name: Tar.gz the binary
+        run: |
+          cd build
+          tar -czf ../LightGet-Linux-x86_64.tar.gz LightGet
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LightGet-Linux-x86_64
+          path: LightGet-Linux-x86_64.tar.gz
+          if-no-files-found: error
+
+      - name: Build AppImage
+        run: |
+          set -e
+          export APPIMAGE_EXTRACT_AND_RUN=1   # CI runners lack FUSE; run AppImages by extracting
+          APPDIR="$PWD/AppDir"
+          mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/512x512/apps"
+          cp build/LightGet "$APPDIR/usr/bin/"
+          cp cross-platform/packaging/linux/lightget.desktop "$APPDIR/usr/share/applications/"
+          # appicon.png is 1024px; linuxdeploy requires a valid hicolor resolution,
+          # so downscale it to the 512x512 the icon path advertises.
+          convert cross-platform/resources/appicon.png -resize 512x512 \
+            "$APPDIR/usr/share/icons/hicolor/512x512/apps/lightget.png"
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy*.AppImage
+          export QMAKE="$(command -v qmake6 || command -v qmake)"
+          ./linuxdeploy-x86_64.AppImage --appdir "$APPDIR" \
+            -d cross-platform/packaging/linux/lightget.desktop \
+            -i "$APPDIR/usr/share/icons/hicolor/512x512/apps/lightget.png" \
+            --plugin qt --output appimage
+          ls -1 *.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LightGet-Linux-AppImage
+          path: LightGet*.AppImage
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # LightGet SWFT (native macOS, Swift/AppKit) -- deprecated, still shipped
+  # ---------------------------------------------------------------------------
+  native-macos:
+    name: Native · macOS (LightGet SWFT)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cpp-qt-port
+
+      - name: Build (Release)
+        run: >
+          xcodebuild
+          -project SnapEdit.xcodeproj
+          -scheme SnapEdit
+          -configuration Release
+          -derivedDataPath build_ci
+          build
+          CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+
+      - name: Zip LightGet SWFT.app
+        run: |
+          cd build_ci/Build/Products/Release
+          ditto -c -k --sequesterRsrc --keepParent "LightGet SWFT.app" "$GITHUB_WORKSPACE/LightGet-SWFT-macOS.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LightGet-SWFT-macOS
+          path: LightGet-SWFT-macOS.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Release -- only on a tag push; gathers every artifact and attaches them.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    needs: [qt-macos, qt-windows, qt-linux, native-macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
