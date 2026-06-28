@@ -239,16 +239,19 @@ QSizeF OverlayWindow::textSize(const Annotation& a) const {
     // Placeholder string used only for measuring an empty annotation (matches the
     // Swift hardcoded "Текст" literal — same glyph width for the min-size clamp).
     const QString s = a.text.isEmpty() ? QString::fromUtf8("Текст") : a.text;
-    // Multi-line bounding rect, word-wrapped at width 1000 (matches Swift).
     QFontMetricsF fm(font);
-    QRectF r = fm.boundingRect(QRectF(0, 0, 1000, 1e7),
-                               Qt::AlignLeft | Qt::TextWordWrap, s);
-    const qreal w = std::max(std::ceil(r.width()), qreal(10));
+    // Width = widest line's ADVANCE — the SAME metric drawTextAnnotation lays each
+    // line out with (boxW). Using horizontalAdvance (not boundingRect) keeps the
+    // selection box / handles / background rect in lock-step with the rendered
+    // glyphs: boundingRect is a tight ink box that under-reports the advance for
+    // bold / large / emoji glyphs, which let the text spill past the background.
+    const QStringList lines = s.split('\n');
+    qreal w = 10;
+    for (const QString& line : lines)
+        w = std::max(w, std::ceil(fm.horizontalAdvance(line)));
     // Height = line count x the render pitch (font height x 1.15, see
-    // drawTextAnnotation / applyAlignmentToEditor) so the selection box and
-    // handles hug the tightened multi-line text. The render is '\n'-split
-    // (NoWrap), so count newlines rather than using the word-wrapped height.
-    const int lineCount = static_cast<int>(s.count('\n')) + 1;
+    // drawTextAnnotation / applyAlignmentToEditor) so the box hugs the text.
+    const int lineCount = static_cast<int>(lines.size());
     const qreal h = std::max(std::ceil(lineCount * fm.height() * 1.15),
                              qreal(font.pointSizeF()));
     return QSizeF(w, h);

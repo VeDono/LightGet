@@ -189,3 +189,46 @@ bool MacNative_setLaunchAtLogin(bool enabled) {
     }
     return false;
 }
+
+// ---------------------------------------------------------------------------
+// MacNative_installEditMenu — give the (LSUIElement) app a standard Edit menu so
+// macOS routes the system "Emoji & Symbols" panel (⌃⌘Space) to the focused text
+// field while annotating a screenshot. Without an Edit menu carrying
+// orderFrontCharacterPalette: the shortcut is a no-op for an accessory app. The
+// standard edit items target the first responder (Qt's text view);
+// orderFrontCharacterPalette: is handled by NSApplication itself, so the emoji
+// item works regardless of which widget has focus.
+// ---------------------------------------------------------------------------
+void MacNative_installEditMenu() {
+    @autoreleasepool {
+        NSApplication* app = [NSApplication sharedApplication];
+        NSMenu* mainMenu = [[NSMenu alloc] init];
+
+        // (1) Application menu — the first submenu; required for a valid menu bar.
+        NSMenuItem* appItem = [[NSMenuItem alloc] init];
+        [mainMenu addItem:appItem];
+        NSMenu* appMenu = [[NSMenu alloc] init];
+        [appMenu addItemWithTitle:@"Quit LightGet"
+                           action:@selector(terminate:)
+                    keyEquivalent:@"q"];
+        [appItem setSubmenu:appMenu];
+
+        // (2) Edit menu — ONLY the Emoji & Symbols panel. We deliberately do NOT
+        // add Cut/Copy/Paste/Undo/Redo here: their ⌘X/⌘C/⌘V/⌘Z key-equivalents
+        // would be claimed by the menu and shadow the overlay's own shortcuts
+        // (⌘C/⌘X copy the screenshot, ⌘Z undoes an annotation). ⌃⌘Space for the
+        // character palette conflicts with nothing, and orderFrontCharacterPalette:
+        // is handled by NSApplication, so the item is always live.
+        NSMenuItem* editItem = [[NSMenuItem alloc] init];
+        [mainMenu addItem:editItem];
+        NSMenu* editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+        NSMenuItem* emoji = [[NSMenuItem alloc] initWithTitle:@"Emoji & Symbols"
+                                                       action:@selector(orderFrontCharacterPalette:)
+                                                keyEquivalent:@" "];
+        [emoji setKeyEquivalentModifierMask:(NSEventModifierFlagControl | NSEventModifierFlagCommand)];
+        [editMenu addItem:emoji];
+        [editItem setSubmenu:editMenu];
+
+        [app setMainMenu:mainMenu];
+    }
+}
