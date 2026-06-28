@@ -203,6 +203,16 @@ const QHash<QString, QHash<QString, QString>>& table() {
           {QStringLiteral("ru"), QStringLiteral("Отмена")},
           {QStringLiteral("uk"), QStringLiteral("Скасувати")}}},
 
+        // Text colour / background palette row labels (design §4)
+        {QStringLiteral("palette.text"),
+         {{QStringLiteral("en"), QStringLiteral("TEXT")},
+          {QStringLiteral("ru"), QStringLiteral("ТЕКСТ")},
+          {QStringLiteral("uk"), QStringLiteral("ТЕКСТ")}}},
+        {QStringLiteral("palette.bg"),
+         {{QStringLiteral("en"), QStringLiteral("FILL")},
+          {QStringLiteral("ru"), QStringLiteral("ФОН")},
+          {QStringLiteral("uk"), QStringLiteral("ФОН")}}},
+
         // Settings tabs
         {QStringLiteral("tab.general"),
          {{QStringLiteral("en"), QStringLiteral("General")},

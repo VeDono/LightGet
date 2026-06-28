@@ -165,6 +165,10 @@ public:
                   bool underline, TextAlign align, const QColor& color,
                   const std::optional<QColor>& bg);
 
+    // Close the open colour/background swatch popup, if any. Returns true if a
+    // popup was actually open (so callers can consume the dismissing click/Esc).
+    bool closePopup();
+
 signals:
     void fontFamilyChanged(const QString& family);   // "" = system default
     void fontSizeChanged(int pt);

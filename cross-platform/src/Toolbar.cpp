@@ -13,6 +13,7 @@
 
 #include "Toolbar.h"
 #include "Settings.h"
+#include "Localization.h"
 
 #include <QPushButton>
 #include <QLabel>
@@ -1118,6 +1119,12 @@ void TextPanel::closeColorPopup() {
     if (m_colorPopup) { m_colorPopup->deleteLater(); m_colorPopup = nullptr; }
 }
 
+bool TextPanel::closePopup() {
+    const bool wasOpen = (m_colorPopup != nullptr);
+    closeColorPopup();
+    return wasOpen;
+}
+
 void TextPanel::openFontPopup(QWidget* anchor) {
     closeColorPopup();
     QWidget* host = parentWidget();
@@ -1175,8 +1182,9 @@ void TextPanel::openColorPopup(bool background, QWidget* anchor) {
     h->setContentsMargins(14, 12, 14, 12);   // design palette padding 14
     h->setSpacing(9);                        // design swatch gap 9
 
-    // Row label (design §4: "ТЕКСТ" / "ФОН", uppercase grey).
-    auto* lab = new QLabel(background ? QStringLiteral("ФОН") : QStringLiteral("ТЕКСТ"), pop);
+    // Row label (design §4: "ТЕКСТ" / "ФОН"), localized to the app language.
+    auto* lab = new QLabel(background ? Loc::t(QStringLiteral("palette.bg"))
+                                      : Loc::t(QStringLiteral("palette.text")), pop);
     lab->setStyleSheet("color:#9a9aa0;background:transparent;font-weight:600;font-size:11px;");
     h->addWidget(lab, 0, Qt::AlignVCenter);
     h->addSpacing(3);

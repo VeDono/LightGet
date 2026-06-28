@@ -916,6 +916,11 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
     // below with the pre-drag bounds so the FIRST move erases the old position.
     m_lastPaintedDirty = QRect();
 
+    // A click anywhere on the overlay while a colour/background swatch popup is
+    // open simply dismisses that popup (standard popup behaviour) and is consumed
+    // — clicks on the popup's own swatches never reach here (child widgets).
+    if (m_textPanel && m_textPanel->closePopup()) { update(); return; }
+
     // A press that REACHES the overlay while editing text commits that text and is
     // CONSUMED — we do NOT also start a new text / selection in the same press.
     // That double-action (commit + immediately spawn a new text) is exactly what
@@ -1211,6 +1216,12 @@ void OverlayWindow::mouseReleaseEvent(QMouseEvent* e) {
 void OverlayWindow::keyPressEvent(QKeyEvent* e) {
     // While editing text, all keys go to the editor (handled in eventFilter).
     if (m_textEditor) { QWidget::keyPressEvent(e); return; }
+
+    // Esc dismisses an open colour popup first (a second Esc then closes the overlay).
+    if (e->key() == Qt::Key_Escape && m_textPanel && m_textPanel->closePopup()) {
+        update();
+        return;
+    }
 
     const bool ctrl = e->modifiers().testFlag(Qt::ControlModifier);   // Cmd on macOS
     const bool shift = e->modifiers().testFlag(Qt::ShiftModifier);
@@ -1633,6 +1644,7 @@ void OverlayWindow::cancelTextEditing() { endTextEditing(false); }
 void OverlayWindow::endTextEditing(bool commit) {
     if (!m_textEditor || m_endingTextEditing) return;
     m_endingTextEditing = true;
+    if (m_textPanel) m_textPanel->closePopup();   // don't leave the swatch popup orphaned
 
     QTextEdit* field = m_textEditor;
     m_textEditor = nullptr;   // null first to avoid re-entry (focus-out commit)
@@ -1718,6 +1730,8 @@ bool OverlayWindow::eventFilter(QObject* obj, QEvent* ev) {
                 return true;
             }
             if (ke->key() == Qt::Key_Escape) {
+                // Esc dismisses an open colour popup first; otherwise cancel edit.
+                if (m_textPanel && m_textPanel->closePopup()) { update(); return true; }
                 cancelTextEditing();   // Esc -> cancel
                 return true;
             }
