@@ -1,0 +1,7 @@
+// app.rc -- Windows resource script: embeds the application icon into the .exe.
+//
+// The FIRST icon resource (lowest ID, by Win32 convention IDI_ICON1) is the one
+// Explorer, the taskbar and Alt-Tab use as the executable's file icon. Path is
+// relative to this .rc file, so AppIcon.ico must sit next to it in resources/.
+// MSVC's rc.exe compiles this automatically when the .rc is a target source.
+IDI_ICON1 ICON "AppIcon.ico"

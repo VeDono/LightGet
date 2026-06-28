@@ -1,0 +1,35 @@
+<!DOCTYPE RCC>
+<!--
+  Bundled SF-Symbol-replacement glyphs, compiled into the LightGet binary via
+  AUTORCC. Each PNG is white-on-transparent at 64x64 and resolves at
+  :/assets/<name>.png (see TrayApp.cpp, SettingsWindow.cpp barIconAsset()).
+  Regenerate the PNGs with resources/gen_icons.cpp (throwaway; not in the build).
+-->
+<RCC version="1.0">
+  <qresource>
+    <file alias="appicon.png">appicon.png</file>
+    <file alias="assets/cursorarrow.png">assets/cursorarrow.png</file>
+    <file alias="assets/arrow.up.right.png">assets/arrow.up.right.png</file>
+    <file alias="assets/line.diagonal.png">assets/line.diagonal.png</file>
+    <file alias="assets/rectangle.png">assets/rectangle.png</file>
+    <file alias="assets/rectangle.fill.png">assets/rectangle.fill.png</file>
+    <file alias="assets/rectangle.dashed.png">assets/rectangle.dashed.png</file>
+    <file alias="assets/pencil.tip.png">assets/pencil.tip.png</file>
+    <file alias="assets/textformat.png">assets/textformat.png</file>
+    <file alias="assets/arrow.uturn.backward.png">assets/arrow.uturn.backward.png</file>
+    <file alias="assets/arrow.uturn.forward.png">assets/arrow.uturn.forward.png</file>
+    <file alias="assets/doc.on.doc.png">assets/doc.on.doc.png</file>
+    <file alias="assets/square.and.arrow.down.png">assets/square.and.arrow.down.png</file>
+    <file alias="assets/xmark.png">assets/xmark.png</file>
+    <file alias="assets/checkmark.png">assets/checkmark.png</file>
+    <file alias="assets/nosign.png">assets/nosign.png</file>
+    <file alias="assets/scissors.png">assets/scissors.png</file>
+    <file alias="assets/feather.png">assets/feather.png</file>
+    <file alias="assets/camera.viewfinder.png">assets/camera.viewfinder.png</file>
+    <file alias="assets/crop.png">assets/crop.png</file>
+    <file alias="assets/paintbrush.pointed.fill.png">assets/paintbrush.pointed.fill.png</file>
+    <file alias="assets/photo.png">assets/photo.png</file>
+    <file alias="assets/arrow.counterclockwise.png">assets/arrow.counterclockwise.png</file>
+    <file alias="assets/arrow.up.left.and.arrow.down.right.png">assets/arrow.up.left.and.arrow.down.right.png</file>
+  </qresource>
+</RCC>

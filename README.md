@@ -4,145 +4,107 @@
 
 <h1 align="center">LightGet</h1>
 
-<p align="center">A fast, Lightshot-style screenshot &amp; annotation tool.</p>
+<p align="center">
+  A fast, cross-platform screenshot &amp; annotation tool — Lightshot-style.<br>
+  Press a hotkey, the screen dims, select an area and annotate it right there
+  (arrows, shapes, pen, text), then copy or save.
+</p>
 
-Press a hotkey, the screen dims, you select an area and annotate it right there
-(arrows, shapes, text), then copy to the clipboard or save to a file.
-
----
-
-## Two editions
-
-LightGet comes in **two editions** that share the same workflow but are built on
-different stacks. Pick whichever matches your platform:
-
-| Edition | Platforms | Stack | Where |
-| --- | --- | --- | --- |
-| **Native macOS** | macOS only | Swift + AppKit + ScreenCaptureKit (no Electron) | this branch (`main`) — `SnapEdit.xcodeproj` + `SnapEdit/` |
-| **Cross-platform** | Windows / Linux / macOS | C++ + Qt 6 Widgets | branch [`cpp-qt-port`](../../tree/cpp-qt-port) — `cross-platform/` |
-
-### Which edition should I use?
-
-- **On a Mac?** Use the **Native macOS** edition — it's the macOS-optimized option:
-  ScreenCaptureKit capture, a `CGShieldingWindowLevel` overlay that can cover the
-  menu bar, cursor/focus save-restore for fullscreen games, and a settings window
-  styled to match the system.
-- **On Windows or Linux** (or you just want one codebase everywhere) — use the
-  **Cross-platform (Qt 6)** edition. It also runs on macOS via pure Qt, which is a
-  fine fallback if you'd rather not build the native app.
-
-Both show their edition + version in the settings footer
-(`LightGet <version> · Native (macOS)` vs `LightGet <version> · Cross-platform (Qt 6)`),
-so you can always tell which one you're running.
+<p align="center">
+  <b>Linux · Windows · macOS</b> — built with C++ / Qt 6, no Electron.
+</p>
 
 ---
 
-## Features (both editions)
+## Editions
 
-- **Global hotkey** (default ⇧⌘2 on macOS) — trigger capture from anywhere.
-- **Live annotation** directly on the screenshot:
-  - Arrow, line, rectangle (outline), filled rectangle (great for censoring), freehand pen
-  - Text with color, background color, resize, and rotation
-- **Copy** to clipboard (⌘C / ⌘X / Enter) or **save** as PNG.
-- **Settings** — change the hotkey, language (EN/RU/UK), dim level, default save
-  folder, bar/tray icon, launch at login.
-- Lives in the menu bar / system tray, no Dock icon.
+LightGet comes in two editions:
 
-macOS-native extras (Native edition): multi-monitor interactive dimming,
-macOS-style filenames (`Screenshot 2026-06-01 at 19.49.10.png`, never overwrites),
-Retina downscaling, and forcing the cursor visible when a fullscreen game has
-hidden it.
+| Edition | Platforms | Status |
+| --- | --- | --- |
+| **LightGet** (this project, C++ / Qt 6) | Linux · Windows · macOS | ✅ **Active** — the current, recommended version |
+| **LightGet SWFT** (native macOS, Swift + AppKit) | macOS only | ⚠️ **Deprecated** — the original Swift app, kept for reference; no longer developed |
+
+> **LightGet SWFT is deprecated.** It was the original native-macOS build (Swift + AppKit +
+> ScreenCaptureKit). All new work happens in the cross-platform Qt edition above. The two
+> install side by side (`LightGet.app` and `LightGet SWFT.app`) and keep separate settings.
 
 ---
 
-## Native macOS edition
+## Features
 
-Swift + AppKit build, optimized for macOS.
-
-**Requirements:** macOS 14 (Sonoma)+, Xcode 16+ to build.
-
-**Build & run:**
-
-1. Open `SnapEdit.xcodeproj` in Xcode.
-2. Press ⌘R.
-3. On first capture, grant **Screen Recording** permission:
-   System Settings → Privacy &amp; Security → Screen Recording → enable LightGet,
-   then relaunch.
-
-**Usage:**
-
-- **⇧⌘2** — dim the screen and start a selection (or use the menu-bar item).
-- Drag to select an area; drag the handles to resize, drag inside to move.
-- Toolbar: cursor / arrow / rectangle / filled rectangle / pen / text, color
-  picker, undo, copy, save, close.
-- **⌘C**, **⌘X**, or **Enter** — copy. **⌘S** — save. **Esc** — cancel.
-- Text tool: click to place, type, **Enter** to confirm, **Shift+Enter** for a new
-  line, drag to move, corner handles to resize and rotate, inline panel for
-  text/background color.
-
-### Project structure (Native)
-
-| File | Responsibility |
-| --- | --- |
-| `SnapEdit/main.swift` | Entry point |
-| `SnapEdit/AppDelegate.swift` | Menu bar, global hotkey, capture trigger |
-| `SnapEdit/HotKey.swift` | Global hotkey registration (Carbon) |
-| `SnapEdit/ScreenCapture.swift` | Screen capture via ScreenCaptureKit |
-| `SnapEdit/OverlayController.swift` | Transparent overlay windows on every screen |
-| `SnapEdit/OverlayView.swift` | Dimming, selection, handles, drawing, rendering |
-| `SnapEdit/ToolbarView.swift` | Floating toolbar and text color panel |
-| `SnapEdit/Annotation.swift` | Annotation model |
-| `SnapEdit/Settings.swift` | UserDefaults-backed settings |
-| `SnapEdit/SettingsWindowController.swift` | Settings window |
-| `SnapEdit/Localization.swift` | Runtime EN/UA/RU localization |
+- **Global hotkey** (default <kbd>⇧⌘2</kbd> / <kbd>Ctrl+Shift+2</kbd>) — works from anywhere, even over fullscreen apps.
+- **Multi-monitor** — every display dims and is interactive; select on any screen.
+- **Live annotation** right on the screenshot:
+  - Arrow, line, rectangle (outline), filled rectangle (great for censoring), freehand pen.
+  - **Text** with a contextual panel — font, size, **B / I / U**, alignment, text colour,
+    background/marker colour, plus corner handles to **resize** and **rotate**.
+- **Colour palette** with 6 colours; toggle any tool, the palette, or text options on/off in Settings.
+- **Copy** to clipboard (<kbd>⌘C</kbd> / <kbd>⌘X</kbd> / <kbd>Enter</kbd>) or **save** as PNG
+  (silent folder or a save dialog), with non-overwriting `Screenshot 2026-06-01 at 19.49.10.png` names.
+- **Settings** — hotkey, language (EN / RU / UK), light / dark / auto appearance, dim level
+  + optional animated dimming, default save folder, menu-bar icon (presets or a custom image),
+  Retina downscaling, launch at login.
+- **Game-friendly** — forces the cursor visible when a fullscreen game hid it, and restores focus afterwards.
+- Lives in the menu bar / tray, no Dock or taskbar window.
 
 ---
 
-## Cross-platform edition (Windows / Linux / macOS)
+## Download &amp; install
 
-C++ / Qt 6 Widgets port, on branch **`cpp-qt-port`** under **`cross-platform/`**.
+Grab the latest build for your OS from the [**Releases**](https://github.com/VeDono/LightGet/releases) page:
 
-**Requirements:** Qt 6 (Widgets, Gui, Core), a C++17 compiler, CMake ≥ 3.16
-(Ninja recommended).
+| OS | Artifact | Install |
+| --- | --- | --- |
+| **Windows** | `LightGet-Setup-Windows-x64.exe` | Run the installer (upgrades in place). |
+| **Linux** | `LightGet-x86_64.AppImage` | `chmod +x` it and run. |
+| **macOS** | `LightGet-macOS.zip` | Unzip and move `LightGet.app` to `/Applications`. |
 
-**Build (quick start):**
+On first capture, grant **Screen Recording** permission to LightGet
+(macOS: System Settings → Privacy &amp; Security → Screen Recording → enable LightGet, then relaunch).
+
+---
+
+## Build from source
+
+### LightGet (Qt 6, cross-platform) — recommended
+
+Needs **Qt 6** (Widgets, Gui, Core), a **C++17** compiler, and **CMake ≥ 3.16**.
 
 ```sh
-git checkout cpp-qt-port
 cd cross-platform
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="/path/to/qt6"
+cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="/path/to/qt6"
 cmake --build build
-./build/LightGet          # Linux / macOS
-build\LightGet.exe        # Windows
 ```
 
-For per-OS Qt install commands, the optional faithful-native macOS path
-(`HAVE_MAC_NATIVE`), Wayland caveats, and full details, see
-[`cross-platform/README.md`](cross-platform/README.md) and `cross-platform/DESIGN.md`.
+See [`cross-platform/README.md`](cross-platform/README.md) for per-OS Qt install commands and
+[`cross-platform/DESIGN.md`](cross-platform/DESIGN.md) for the architecture.
 
-> Pre-built binaries for all platforms are produced by CI on tagged releases
-> (see [`.github/workflows/release.yml`](.github/workflows/release.yml)).
+### LightGet SWFT (native macOS, deprecated)
+
+Open `SnapEdit.xcodeproj` in Xcode 16+ and press <kbd>⌘R</kbd> (macOS 14 Sonoma or later).
+This edition is no longer actively developed.
 
 ---
 
-## Video demo
+## Usage
+
+- <kbd>⇧⌘2</kbd> — dim the screen and start a selection (or click the menu-bar / tray icon).
+- Drag to select; drag the handles to resize, drag inside to move.
+- Toolbar: cursor / arrow / line / rectangle / filled rectangle / pen / text, colour palette,
+  undo / redo, copy, save, close.
+- <kbd>⌘C</kbd> / <kbd>⌘X</kbd> / <kbd>Enter</kbd> — copy. <kbd>⌘S</kbd> — save. <kbd>Esc</kbd> — cancel.
+- Text tool: click to place and type; a panel appears above the block for font / size / style /
+  alignment / colour / background; corner handles resize and rotate; <kbd>Enter</kbd> confirms,
+  <kbd>Shift+Enter</kbd> adds a line.
+
+---
+
+## Demo
 
 https://github.com/user-attachments/assets/ac8c00cf-3264-4689-9c85-90b17594d783
 
-## Screenshots
-
-1:
-<img width="1534" height="853" alt="exampleOfWorkOfLightGetApp" src="https://github.com/user-attachments/assets/e780e8e8-1a9f-44c9-b2b3-a010b76c5528" />
-2:
-<img width="3071" height="1711" alt="image" src="https://github.com/user-attachments/assets/a1800d26-0e1d-4996-b093-60bbd35444f6" />
-3:
-<img width="3069" height="1717" alt="image" src="https://github.com/user-attachments/assets/2e3ad08a-2e7b-45da-9745-f1c22e0434e0" />
-
-<!--
-![Selection](docs/selection.png)
-![Annotation](docs/annotation.png)
-![Settings](docs/settings.png)
--->
+<img width="1534" alt="LightGet in action" src="https://github.com/user-attachments/assets/e780e8e8-1a9f-44c9-b2b3-a010b76c5528" />
 
 ---
 
@@ -150,9 +112,8 @@ https://github.com/user-attachments/assets/ac8c00cf-3264-4689-9c85-90b17594d783
 
 Licensed under the **GNU General Public License v3.0** (GPL-3.0) — see [LICENSE](LICENSE).
 
-In short: anyone is free to use, study, modify, and share this software,
-and may even sell it or offer paid support. The one condition is copyleft —
-if you distribute a modified version, you must release its source code under
-the same GPL-3.0 license. It cannot be turned into a closed, proprietary product.
+In short: anyone is free to use, study, modify, and share this software, and may even sell it or
+offer paid support. The one condition is copyleft — if you distribute a modified version you must
+release its source under the same GPL-3.0 license; it cannot become a closed, proprietary product.
 
-Copyright (c) 2026 Sergey Emelyanov.
+Copyright © 2026 Sergey Emelyanov.
