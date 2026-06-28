@@ -99,8 +99,17 @@ OverlayWindow::OverlayWindow(const QImage& screenshot, QScreen* screen, QWidget*
     setFocusPolicy(Qt::StrongFocus);
     setCursor(Qt::CrossCursor);   // crosshair until a selection exists
 
-    if (m_screen)
+    if (m_screen) {
         setGeometry(m_screen->geometry());
+        // Pin the overlay to the full screen size so it CANNOT be resized. A
+        // frameless top-level window is created resizable by default, and macOS
+        // honours edge-drag resize on a resizable borderless window even with no
+        // visible border — so the user could grab an edge and shrink the overlay,
+        // which scaled the frozen screenshot into the smaller canvas (the "the
+        // still frame stretches / the app then works inside it" bug). setFixedSize
+        // sets min == max, which also makes Qt drop NSWindowStyleMaskResizable.
+        setFixedSize(m_screen->geometry().size());
+    }
 
     // macOS: kill the default window-appear animation BEFORE the overlay is ever
     // shown, so the screen does NOT visibly "zoom out and back" on capture. We do

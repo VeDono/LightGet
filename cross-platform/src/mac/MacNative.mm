@@ -46,6 +46,14 @@ void OverlayWindow_applyShieldLevel(WId win) {
     NSWindow* window = [view window];
     if (window == nil) return;
 
+    // Make sure the shield overlay can never be resized by the user. A frameless
+    // top-level NSWindow is created with NSWindowStyleMaskResizable, and macOS
+    // allows edge-drag resizing of a resizable borderless window even though it
+    // has no visible border — letting the user shrink the overlay and scale the
+    // frozen screenshot into it. Clear the bit so the edges are inert. (Qt also
+    // drops it when the widget is given a fixed size; this re-asserts it here.)
+    [window setStyleMask:([window styleMask] & ~NSWindowStyleMaskResizable)];
+
     [window setLevel:(NSInteger)CGShieldingWindowLevel()];
     [window setCollectionBehavior:(NSWindowCollectionBehaviorCanJoinAllSpaces |
                                    NSWindowCollectionBehaviorStationary |
