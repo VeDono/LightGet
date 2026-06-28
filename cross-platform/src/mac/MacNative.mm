@@ -94,6 +94,47 @@ void OverlayWindow_disableShowAnimation(WId win) {
 }
 
 // ---------------------------------------------------------------------------
+// MacNative_confineCursorToScreen — clamp the hardware cursor to the display the
+// overlay window lives on, so a selection/resize drag cannot drag the pointer
+// onto an adjacent monitor.
+//
+// Qt's QCursor::setPos() routes through CGWarpMouseCursorPosition but leaves the
+// default ~0.25s "local events suppression interval" in place, so during a fast
+// drag the OS keeps delivering the pre-warp motion and the cursor visibly slips
+// onto the neighbouring screen before the clamp settles. We replicate the Swift
+// overlay's approach instead: read the true CG cursor location, clamp it to the
+// window's display bounds (CG top-left global coords), warp, and immediately
+// re-associate the mouse so movement stays in sync. This confines reliably.
+// Same WId->NSView->NSWindow climb and nil guards as the helpers above.
+// ---------------------------------------------------------------------------
+void MacNative_confineCursorToScreen(WId win) {
+    if (win == 0) return;
+    NSView* view = (__bridge NSView*)reinterpret_cast<void*>(win);
+    if (![view isKindOfClass:[NSView class]]) return;
+    NSWindow* window = [view window];
+    if (window == nil) return;
+    NSScreen* screen = [window screen];
+    if (screen == nil) return;
+    NSNumber* num = screen.deviceDescription[@"NSScreenNumber"];
+    if (num == nil) return;
+    CGDirectDisplayID display = (CGDirectDisplayID)[num unsignedIntValue];
+    CGRect b = CGDisplayBounds(display);
+
+    CGEventRef ev = CGEventCreate(NULL);
+    if (ev == NULL) return;
+    CGPoint cur = CGEventGetLocation(ev);
+    CFRelease(ev);
+
+    CGPoint p = cur;
+    p.x = MIN(MAX(b.origin.x + 1.0, p.x), b.origin.x + b.size.width - 2.0);
+    p.y = MIN(MAX(b.origin.y + 1.0, p.y), b.origin.y + b.size.height - 2.0);
+    if (p.x != cur.x || p.y != cur.y) {
+        CGWarpMouseCursorPosition(p);
+        CGAssociateMouseAndMouseCursorPosition(true);   // keep cursor in sync
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TrayApp_forceCursorVisible — defeat an app that hid the system cursor
 // (e.g. a full-screen game using NSCursor.hide / CGDisplayHideCursor / mouselook)
 // so the crosshair is usable on the overlay. Re-associates the mouse and unhides

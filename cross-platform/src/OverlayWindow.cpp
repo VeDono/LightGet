@@ -326,14 +326,16 @@ void OverlayWindow::paintEvent(QPaintEvent* event) {
 
     // Blit the cached upright backdrop instead of re-rendering the full QImage
     // (with its orientation transform) every frame — pixmap blits are GPU-fast.
-    // Map the logical damage rect into backdrop device pixels (the pixmap carries
-    // the dpr) and blit just that sub-rect to its matching destination.
+    // Draw the WHOLE backdrop at the origin (DPR-aware); the clip rect set above
+    // restricts the actual paint to the damaged band, so a partial repaint stays
+    // cheap. NOTE: do NOT hand-compute a device-pixel source sub-rect — passing
+    // `damage * dpr` as drawPixmap's source read from the wrong part of the Retina
+    // backdrop whenever the damage rect was away from the origin (a partial repaint
+    // while shrinking the selection), which made the dimmed area show the captured
+    // frame shifted. Drawing the full pixmap at (0,0) is always positionally exact.
     ensureBackdrop();
     if (!m_backdrop.isNull()) {
-        const qreal dpr = m_backdrop.devicePixelRatio();
-        QRectF srcPx(damage.x() * dpr, damage.y() * dpr,
-                     damage.width() * dpr, damage.height() * dpr);
-        p.drawPixmap(QRectF(damage), m_backdrop, srcPx);
+        p.drawPixmap(0, 0, m_backdrop);
     }
 
     // drawDim already builds an even-odd path covering rect() with the selection
@@ -894,16 +896,26 @@ void OverlayWindow::endCustomCursorDrag() {
     m_cursorRectsDisabled = false;
 }
 
-// Clamp QCursor::pos to this screen during selection so the cursor cannot fly
-// to an adjacent monitor (Qt top-left virtual-desktop coords).
+// Clamp the cursor to this screen during selection so it cannot fly to an
+// adjacent monitor.
 void OverlayWindow::confineCursorToScreen() {
     if (!m_screen) return;
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+    // On macOS QCursor::setPos() goes through CGWarp with the default local-events
+    // suppression interval, so during a fast drag the pointer still slips onto an
+    // adjacent monitor before the clamp catches it. The native helper warps via
+    // CGWarpMouseCursorPosition + re-associates the cursor (exactly like the Swift
+    // overlay), which confines reliably on multi-monitor setups.
+    extern void MacNative_confineCursorToScreen(WId win);  // implemented in MacNative.mm
+    MacNative_confineCursorToScreen(winId());
+#else
     const QRect b = m_screen->geometry();
     QPoint cur = QCursor::pos();
     QPoint p = cur;
     p.setX(std::min(std::max(b.left() + 1, p.x()), b.right() - 2));
     p.setY(std::min(std::max(b.top() + 1, p.y()), b.bottom() - 2));
     if (p != cur) QCursor::setPos(p);
+#endif
 }
 
 // ============================================================================
@@ -987,6 +999,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
             m_selection.reset();
             hideToolbar();
             m_dragMode = DragMode::NewSelection;
+            beginCustomCursorDrag();   // confine the pointer to this screen
             emit beganSelection();
         } else if (m_tool == Tool::Text) {
             // ----- text mouse-down (mirrors handleTextMouseDown) -----
@@ -1057,6 +1070,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
         }
     } else {
         m_dragMode = DragMode::NewSelection;
+        beginCustomCursorDrag();   // confine the pointer to this screen
         emit beganSelection();
     }
     // Seed the dirty-rect cache with the gesture's pre-move bounds (null for a
