@@ -1281,9 +1281,7 @@ void OverlayWindow::onSelectColor(const QColor& c) {
     m_color = c;
     // Apply to the live editor and the selected text immediately.
     if (m_textEditor) {
-        QString style = QString("color: %1; background-color: rgba(0,0,0,71);")
-                            .arg(c.name(QColor::HexRgb));
-        m_textEditor->setStyleSheet(style);
+        applyEditorColors();
     }
     if (m_activeTextIndex && m_editingIndex == -1) {
         const int i = *m_activeTextIndex;
@@ -1361,9 +1359,6 @@ void OverlayWindow::presentEditor(const QPointF& origin, qreal fontSize,
     editor->setFont(font);
     m_currentFontSize = fontSize;
 
-    // background rgba(black, 0.28) ≈ alpha 71/255; text color = col.
-    editor->setStyleSheet(QString("color: %1; background-color: rgba(0,0,0,71);")
-                              .arg(col.name(QColor::HexRgb)));
     editor->setAlignment(toQtAlignment(align));
     editor->setPlainText(text);
     editor->setGeometry(static_cast<int>(origin.x()), static_cast<int>(origin.y()),
@@ -1371,6 +1366,8 @@ void OverlayWindow::presentEditor(const QPointF& origin, qreal fontSize,
 
     m_textEditor = editor;
     m_currentTextAlignment = align;
+    m_color = col;
+    applyEditorColors();   // text colour + live background (m_currentBg)
 
     editor->installEventFilter(this);
     connect(editor, &QTextEdit::textChanged, this, [this]{
@@ -1784,6 +1781,22 @@ void OverlayWindow::applyEditorStyle() {
     update();
 }
 
+void OverlayWindow::applyEditorColors() {
+    if (!m_textEditor) return;
+    // Text colour = m_color; background = the chosen marker colour (LIVE preview)
+    // or a faint editing chrome when there is no background. The committed value
+    // is m_currentBg, persisted to the annotation on commit.
+    QString bg;
+    if (m_currentBg) {
+        const QColor& c = *m_currentBg;
+        bg = QStringLiteral("rgba(%1,%2,%3,255)").arg(c.red()).arg(c.green()).arg(c.blue());
+    } else {
+        bg = QStringLiteral("rgba(0,0,0,71)");
+    }
+    m_textEditor->setStyleSheet(QStringLiteral("color: %1; background-color: %2;")
+                                    .arg(m_color.name(QColor::HexRgb), bg));
+}
+
 void OverlayWindow::onTextFontFamily(const QString& family) {
     m_currentFontFamily = family;
     if (m_textEditor) { applyEditorStyle(); return; }
@@ -1832,11 +1845,7 @@ void OverlayWindow::onTextUnderline(bool on) {
 
 void OverlayWindow::onTextColor(const QColor& c) {
     m_color = c;
-    if (m_textEditor) {
-        m_textEditor->setStyleSheet(QString("color: %1; background-color: rgba(0,0,0,71);")
-                                        .arg(c.name(QColor::HexRgb)));
-        return;
-    }
+    if (m_textEditor) { applyEditorColors(); return; }
     if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
         m_annotations[*m_activeTextIndex].color = c;
         update();
@@ -1844,7 +1853,7 @@ void OverlayWindow::onTextColor(const QColor& c) {
 }
 
 void OverlayWindow::onTextBg(const std::optional<QColor>& c) {
-    if (m_textEditor) { m_currentBg = c; return; }   // applied to the annotation on commit
+    if (m_textEditor) { m_currentBg = c; applyEditorColors(); return; }   // live preview + persisted on commit
     if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
         m_annotations[*m_activeTextIndex].bgColor = c;
         update();

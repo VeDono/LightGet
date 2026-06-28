@@ -172,6 +172,7 @@ private:
     void positionTextInspector(const Annotation& a);   // legacy; unused
     void positionTextPanel();            // above the editor / selected text block
     void applyEditorStyle();             // push current style state into the editor
+    void applyEditorColors();            // editor text colour + live background preview
     // Live handlers wired to the TextPanel signals (apply to editor or selection).
     void onTextFontFamily(const QString& family);
     void onTextFontSize(int pt);

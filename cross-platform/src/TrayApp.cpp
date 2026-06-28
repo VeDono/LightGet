@@ -86,9 +86,20 @@ QPixmap paintMenuGlyphPixmap(MenuGlyph kind, const QColor& color, int side) {
         break;
     }
     case MenuGlyph::Power: {
+        // Power symbol: a vertical stem entering a ring that is OPEN AT THE TOP
+        // (design M12 3v8 + M7.5 6.5 a7 7 0 1 0 9 0). Drawn as a polyline so the
+        // gap is unambiguously at the top (independent of arc-angle conventions).
         p.drawLine(PT(12, 3), PT(12, 11));
-        QRectF ring(5.5 * sc, 5.5 * sc, 13 * sc, 13 * sc);   // center (12,12) r6.5
-        p.drawArc(ring, 120 * 16, -300 * 16);                // ~300°, gap at top
+        const QPointF cc = PT(12, 11.86);
+        const qreal rr = 7.0 * sc;
+        QPainterPath ring;
+        bool first = true;
+        for (int deg = -50; deg <= 230; deg += 5) {     // gap ~80° centred on top
+            const qreal a = deg * M_PI / 180.0;
+            const QPointF pt(cc.x() + rr * std::cos(a), cc.y() + rr * std::sin(a));
+            if (first) { ring.moveTo(pt); first = false; } else ring.lineTo(pt);
+        }
+        p.drawPath(ring);
         break;
     }
     }

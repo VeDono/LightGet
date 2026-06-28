@@ -95,13 +95,17 @@ private:
     // relative footprint; the button margin + each glyph's transparent inset keep
     // the click pop (1.10x) from clipping, and the hover/selected fills are drawn
     // inset in PopButton::paintEvent so they scale cleanly with the pop.
-    static constexpr int kButtonSize = 40;
-    static constexpr int kIconSize   = 40;
-    static constexpr int kPadV       = 8;    // panel vertical padding
-    static constexpr int kPadH       = 10;   // panel horizontal padding
-    static constexpr int kGap        = 3;    // gap between adjacent buttons
-    static constexpr int kBtnRadius  = 11;   // button corner radius
-    static constexpr int kSwatch     = 26;   // color well diameter
+    // NATIVE sizes (SnapEdit/ToolbarView.swift): button 30, pad 6, gap 2, panel
+    // radius 8, button radius 5, colour well 18 (gap 4) -> 42px tall panel. The
+    // design HTML draws a bigger 40px toolbar, but the user wants the compact
+    // native size, so these mirror the Swift constants 1:1.
+    static constexpr int kButtonSize = 30;
+    static constexpr int kIconSize   = 30;
+    static constexpr int kPadV       = 6;    // panel vertical padding
+    static constexpr int kPadH       = 6;    // panel horizontal padding
+    static constexpr int kGap        = 2;    // gap between adjacent buttons
+    static constexpr int kBtnRadius  = 5;    // button corner radius
+    static constexpr int kSwatch     = 18;   // color well diameter
     static constexpr int kSwatchGap  = 4;    // gap between color wells
 
     QHash<Tool, QPushButton*> m_toolButtons;

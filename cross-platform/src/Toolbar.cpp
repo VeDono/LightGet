@@ -47,13 +47,15 @@ namespace Palette {
 // 0 red, 1 green, 2 blue, 3 yellow, 4 black, 5 white.
 // Values mirror AppKit's .systemRed/.systemGreen/.systemBlue/.systemYellow.
 const QVector<QColor>& colors() {
+    // Design palette (toolbar HTML §4): brighter "dark-mode" hues + near-black,
+    // used by both the toolbar wells and the text colour/background popups.
     static const QVector<QColor> c = {
-        QColor(255,  59,  48),   // systemRed
-        QColor( 52, 199,  89),   // systemGreen
-        QColor(  0, 122, 255),   // systemBlue
-        QColor(255, 204,   0),   // systemYellow
-        QColor(  0,   0,   0),   // black
-        QColor(255, 255, 255),   // white
+        QColor(0xff, 0x45, 0x3a),   // red    #ff453a
+        QColor(0x32, 0xd7, 0x4b),   // green  #32d74b
+        QColor(0x0a, 0x84, 0xff),   // blue   #0a84ff
+        QColor(0xff, 0xd6, 0x0a),   // yellow #ffd60a
+        QColor(0x1c, 0x1c, 0x1e),   // near-black #1c1c1e
+        QColor(255, 255, 255),      // white  #ffffff
     };
     return c;
 }
@@ -84,7 +86,7 @@ namespace {
 // white@9%. The toolbar panel uses radius 16; the inspector keeps the tighter 8.
 const QColor kPanelSurface(0x24, 0x24, 0x29);     // #242429
 const QColor kPanelBorder(255, 255, 255, 23);     // rgba(255,255,255,0.09)
-constexpr double kPanelRadiusToolbar   = 16.0;
+constexpr double kPanelRadiusToolbar   = 8.0;   // native cornerRadius
 constexpr double kPanelRadiusInspector = 8.0;
 
 const QColor kSelectedBlue(0x0a, 0x84, 0xff);     // accent / active — #0A84FF
@@ -694,10 +696,11 @@ void ToolbarView::paintEvent(QPaintEvent*) {
     p.setBrush(kPanelSurface);
     p.drawRoundedRect(r, kPanelRadiusToolbar, kPanelRadiusToolbar);
 
-    // 1px group dividers (white@10%, height 26) centred on the recorded x's.
+    // 1px group dividers (white@10%) centred on the recorded x's, scaled to the
+    // compact native panel.
     p.setRenderHint(QPainter::Antialiasing, false);
     p.setPen(QPen(kSeparator, 1.0));
-    const qreal sepH = 26.0;
+    const qreal sepH = 20.0;
     const qreal y0 = (height() - sepH) / 2.0;
     for (int sx : m_separatorX) {
         const qreal xc = sx + 0.5;   // pixel centre of the 1px line
@@ -1166,25 +1169,31 @@ void TextPanel::openColorPopup(bool background, QWidget* anchor) {
     auto* pop = new QWidget(host);
     pop->setObjectName("cpop");
     pop->setStyleSheet(QStringLiteral(
-        "#cpop{background:%1;border:1px solid %2;border-radius:11px;}")
+        "#cpop{background:%1;border:1px solid %2;border-radius:14px;}")
         .arg(cssCol(kPanelSurface), cssCol(kPanelBorder)));
     auto* h = new QHBoxLayout(pop);
-    h->setContentsMargins(10, 8, 10, 8);
-    h->setSpacing(8);
+    h->setContentsMargins(14, 12, 14, 12);   // design palette padding 14
+    h->setSpacing(9);                        // design swatch gap 9
+
+    // Row label (design §4: "ТЕКСТ" / "ФОН", uppercase grey).
+    auto* lab = new QLabel(background ? QStringLiteral("ФОН") : QStringLiteral("ТЕКСТ"), pop);
+    lab->setStyleSheet("color:#9a9aa0;background:transparent;font-weight:600;font-size:11px;");
+    h->addWidget(lab, 0, Qt::AlignVCenter);
+    h->addSpacing(3);
 
     auto addSwatch = [&](std::optional<QColor> c) {
         auto* b = new QPushButton(pop);
         b->setFocusPolicy(Qt::NoFocus);
         b->setCursor(Qt::PointingHandCursor);
-        b->setFixedSize(24, 24);
-        b->setIconSize(QSize(24, 24));
+        b->setFixedSize(26, 26);             // design swatch 26px
+        b->setIconSize(QSize(26, 26));
         b->setStyleSheet("QPushButton{border:none;background:transparent;}");
         if (!c.has_value()) {
-            b->setIcon(makeGlyph(QStringLiteral("nosign"), QColor(0xff, 0x69, 0x61), 24));
+            b->setIcon(makeGlyph(QStringLiteral("nosign"), QColor(0xff, 0x69, 0x61), 26));
         } else {
             const bool sel = background ? (m_bg && Palette::sameColor(*m_bg, *c))
                                         : Palette::sameColor(m_color, *c);
-            b->setIcon(makeSwatch(*c, sel, 24));
+            b->setIcon(makeSwatch(*c, sel, 26));
         }
         connect(b, &QPushButton::clicked, this, [this, background, c]() {
             if (background) { m_bg = c; emit bgColorChanged(c); }
@@ -1196,7 +1205,7 @@ void TextPanel::openColorPopup(bool background, QWidget* anchor) {
     };
 
     if (background) addSwatch(std::nullopt);
-    for (const QColor& c : Palette::colors()) addSwatch(c);
+    for (const QColor& c : Palette::colors()) addSwatch(c);   // none + all 6 (incl. yellow)
 
     pop->adjustSize();
     const QPoint a = anchor->mapTo(host, QPoint(anchor->width() / 2, anchor->height()));
