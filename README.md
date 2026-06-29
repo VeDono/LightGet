@@ -103,9 +103,11 @@ This edition is no longer actively developed.
 ## Demo
 
 Video example 1:
+
 https://github.com/user-attachments/assets/1d78ecb7-711a-4788-9a97-b567b3d0e88f
 
 Video example 2:
+
 https://github.com/user-attachments/assets/df1faebf-5d7f-4e0d-be31-d626d0ada0e5
 
 
@@ -116,12 +118,15 @@ Menu of the app at the bar:
 <img width="263" height="193" alt="image" src="https://github.com/user-attachments/assets/af1cbc3e-4853-4a9a-8a35-37b0bc7b7cbc" />
 
 General setting page:
+
 <img width="1919" height="1072" alt="image" src="https://github.com/user-attachments/assets/4535c5ba-e493-433e-9425-ae1f9db05920" />
 
 Features setting page:
+
 <img width="1919" height="1072" alt="image" src="https://github.com/user-attachments/assets/43c8a554-0b8e-41da-8b40-dbbb437d7a10" />
 
 Additional example:
+
 <img width="1534" height="859" alt="image" src="https://github.com/user-attachments/assets/8b3984c9-b95e-4ae3-843f-320169a03c94" />
 
 
