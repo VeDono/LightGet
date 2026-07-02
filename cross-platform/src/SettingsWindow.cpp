@@ -59,6 +59,7 @@
 #include <QDate>
 #include <QScreen>
 #include <QGuiApplication>
+#include <QScrollArea>
 #include <QStyleHints>
 #include <QCursor>
 #include <QSignalBlocker>
@@ -632,7 +633,7 @@ private:
 // Version + edition (set as compile definitions in CMakeLists.txt). Defaults
 // keep the file self-contained if a definition is ever missing.
 #ifndef LIGHTGET_VERSION
-#define LIGHTGET_VERSION "1.0.2"
+#define LIGHTGET_VERSION "1.0.3"
 #endif
 #ifndef LIGHTGET_EDITION
 #define LIGHTGET_EDITION "Cross-platform (Qt 6)"
@@ -1043,6 +1044,10 @@ void HotkeyRecorder::keyPressEvent(QKeyEvent* event) {
         keyText = QKeySequence(k).toString(QKeySequence::NativeText).toUpper();
 
     const uint32_t carbonCode = carbonKeyCode(k, event->nativeVirtualKey());
+    if (carbonCode == 0) {   // key this platform's hotkey backend can't map
+        QApplication::beep();
+        return;              // keep recording; don't persist an unregisterable combo
+    }
     const QString display = displayString(mods, keyText);
 
     m_recording = false;
@@ -1125,8 +1130,12 @@ uint32_t HotkeyRecorder::carbonKeyCode(int qtKey, quint32 nativeVK) {
     case Qt::Key_F11: return 0x67; case Qt::Key_F12: return 0x6F;
     default: break;
     }
-    // Unknown key: persist the native VK if any, else 0.
-    return static_cast<uint32_t>(nativeVK);
+    // Unknown key -> 0 (unmappable). On macOS a valid Carbon code was already
+    // returned above from nativeVK; off macOS the native VK is NOT a Carbon code,
+    // and persisting it as one silently mis-registered the hotkey (e.g. Windows
+    // VK_HOME 0x24 collides with Carbon kVK_Return, so Ctrl+Home registered
+    // Ctrl+Enter). Returning 0 makes the caller reject the key instead.
+    return 0;
 }
 
 // ===========================================================================
@@ -1140,8 +1149,18 @@ SettingsWindow::SettingsWindow(QWidget* parent) : QDialog(parent) {
     // card + About footer breathe (design canvas is 500x894).
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     setAttribute(Qt::WA_TranslucentBackground, true);   // rounded corners show through
-    setFixedSize(500, 840);   // tall enough for the General card + About footer
-                              // (design root 500x894), without a loose gap.
+    // Design height is 840, but on small displays (1366x768 laptops — common on
+    // Windows/Linux) that exceeds the work area: the frameless window has no OS
+    // resize, so the title bar (the only move/close control) lands off-screen and
+    // the bottom rows are cut off with no way to reach them. Clamp the height to
+    // the available work area; buildUI() wraps the body in a QScrollArea so any
+    // overflow scrolls instead of being lost.
+    int availH = 840;
+    if (QScreen* scr = QGuiApplication::screenAt(QCursor::pos()))
+        availH = scr->availableGeometry().height();
+    else if (QScreen* pr = QGuiApplication::primaryScreen())
+        availH = pr->availableGeometry().height();
+    setFixedSize(500, qBound(420, availH - 48, 840));
 
     m_recorder = new HotkeyRecorder(this);   // reused member across rebuilds
     connect(m_recorder, &HotkeyRecorder::captured, this,
@@ -1156,11 +1175,20 @@ SettingsWindow::SettingsWindow(QWidget* parent) : QDialog(parent) {
     buildUI();
 }
 
+void SettingsWindow::refreshHotKeyDisplay() {
+    if (m_recorder) m_recorder->setText(Settings::instance().hotKeyDisplay());
+}
+
 void SettingsWindow::showCentered() {
-    // Center on the screen under the cursor (accessory-app focus dance).
+    // Center on the screen under the cursor (accessory-app focus dance), but
+    // clamp so the window never spills past the work area — the title bar is the
+    // only move/close control, so it must stay on-screen on small displays.
     if (QScreen* scr = QGuiApplication::screenAt(QCursor::pos())) {
         const QRect g = scr->availableGeometry();
-        move(g.center() - rect().center());
+        QPoint p = g.center() - rect().center();
+        p.setX(qBound(g.left(), p.x(), g.right() - width() + 1));
+        p.setY(qBound(g.top(),  p.y(), g.bottom() - height() + 1));
+        move(p);
     }
     show();
     raise();
@@ -1479,11 +1507,24 @@ void SettingsWindow::buildUI() {
     bodyCol->addSpacing(-1);
     bodyCol->addWidget(m_stack, 1);
 
+    // Wrap the body in a scroll area so that when the window height was clamped
+    // below the design's 840 (small screens), the overflowing rows stay reachable
+    // by scrolling instead of being clipped off the bottom. The title bar stays
+    // pinned above it, always draggable/closable. On full-height screens the
+    // content fits and no scrollbar shows.
+    auto* scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setAttribute(Qt::WA_TranslucentBackground, true);
+    scroll->viewport()->setAutoFillBackground(false);
+    scroll->setWidget(body);
+
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
     root->addWidget(m_titleBar);
-    root->addWidget(body, 1);
+    root->addWidget(scroll, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1507,10 +1548,11 @@ QWidget* SettingsWindow::buildTitleBar() {
     h->setContentsMargins(16, 0, 16, 0);
     h->setSpacing(8);
 
-    // Single red "close" dot (left). The window is a fixed-size accessory panel,
-    // so the yellow (minimize) and green (zoom) dots would be non-functional —
-    // per the user's request they're dropped, leaving only the working close.
-    {
+    // Single "close" control. On macOS it sits on the LEFT (traffic-light
+    // convention); on Windows/Linux it sits on the RIGHT to match those
+    // platforms' window conventions. The yellow (minimize) and green (zoom) dots
+    // are dropped — this is a fixed-size accessory panel, so they'd be inert.
+    auto addCloseDot = [this, h]() {
         auto* dot = new QPushButton;
         dot->setFixedSize(12, 12);
         dot->setCursor(Qt::PointingHandCursor);
@@ -1520,9 +1562,15 @@ QWidget* SettingsWindow::buildTitleBar() {
             "QPushButton:hover { background-color:#ff4438; }"));
         connect(dot, &QPushButton::clicked, this, &QWidget::close);
         h->addWidget(dot, 0, Qt::AlignVCenter);
-    }
+    };
 
+#if defined(Q_OS_MACOS)
+    addCloseDot();
     h->addStretch(1);
+#else
+    h->addStretch(1);
+    addCloseDot();
+#endif
 
     // Centered title overlaid across the full bar width (so the dots don't push
     // it off-center). Use a child label positioned to span the bar.
