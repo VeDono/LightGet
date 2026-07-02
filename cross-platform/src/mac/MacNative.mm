@@ -236,7 +236,13 @@ void MacNative_requestScreenCapturePermission() {
 // ---------------------------------------------------------------------------
 bool MacNative_isLaunchAtLoginEnabled() {
     if (@available(macOS 13.0, *)) {
-        return [[SMAppService mainAppService] status] == SMAppServiceStatusEnabled;
+        // Treat RequiresApproval as "on" too: registration can succeed (toggle
+        // stays ON, no error) while macOS parks the login item pending approval
+        // in System Settings > Login Items. Reporting only Enabled desynced the
+        // toggle to OFF on the next rebuild, so the user kept re-flipping it.
+        SMAppServiceStatus st = [[SMAppService mainAppService] status];
+        return st == SMAppServiceStatusEnabled ||
+               st == SMAppServiceStatusRequiresApproval;
     }
     return false;
 }

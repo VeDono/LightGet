@@ -512,6 +512,9 @@ ToolbarView::ToolbarView(QWidget* parent) : QWidget(parent) {
     setFocusPolicy(Qt::NoFocus);
     setCursor(Qt::ArrowCursor);
     setAttribute(Qt::WA_TranslucentBackground, true);
+    // Swallow clicks on the toolbar's own dead space (padding between buttons) so
+    // they don't fall through to the overlay beneath and reset the selection.
+    setAttribute(Qt::WA_NoMousePropagation, true);
     buildButtons();
 }
 
@@ -882,6 +885,10 @@ TextPanel::TextPanel(QWidget* parent) : QWidget(parent) {
     setFocusPolicy(Qt::NoFocus);
     setCursor(Qt::ArrowCursor);
     setAttribute(Qt::WA_TranslucentBackground, true);
+    // Swallow clicks on the panel's dead space (margins, dividers, size label) so
+    // a slightly-missed B/I/U or +/- doesn't fall through to the overlay and end
+    // the edit session or spawn a new empty editor under the panel.
+    setAttribute(Qt::WA_NoMousePropagation, true);
     m_row = new QHBoxLayout(this);
     m_row->setContentsMargins(8, 6, 8, 6);
     m_row->setSpacing(2);

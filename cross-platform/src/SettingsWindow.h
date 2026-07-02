@@ -265,6 +265,10 @@ signals:
 
 protected:
     void keyPressEvent(QKeyEvent*) override;
+    // Cancel recording if focus leaves the field (click elsewhere / a rebuild):
+    // otherwise it stayed armed showing "Press keys…" forever with no key able to
+    // reach it.
+    void focusOutEvent(QFocusEvent*) override;
 
 private:
     void startRecording();

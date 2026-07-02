@@ -633,7 +633,7 @@ private:
 // Version + edition (set as compile definitions in CMakeLists.txt). Defaults
 // keep the file self-contained if a definition is ever missing.
 #ifndef LIGHTGET_VERSION
-#define LIGHTGET_VERSION "1.0.3"
+#define LIGHTGET_VERSION "1.0.4"
 #endif
 #ifndef LIGHTGET_EDITION
 #define LIGHTGET_EDITION "Cross-platform (Qt 6)"
@@ -1010,6 +1010,15 @@ void HotkeyRecorder::startRecording() {
     setFocus(Qt::OtherFocusReason);
 }
 
+void HotkeyRecorder::focusOutEvent(QFocusEvent* event) {
+    if (m_recording) {   // clicked away / rebuilt while armed: cancel cleanly
+        m_recording = false;
+        setStyleSheet(m_idleStyle);
+        setText(Settings::instance().hotKeyDisplay());
+    }
+    QPushButton::focusOutEvent(event);
+}
+
 void HotkeyRecorder::keyPressEvent(QKeyEvent* event) {
     if (!m_recording) { QPushButton::keyPressEvent(event); return; }
 
@@ -1031,7 +1040,10 @@ void HotkeyRecorder::keyPressEvent(QKeyEvent* event) {
 
     const Qt::KeyboardModifiers mods = event->modifiers();
     const uint32_t carbonMods = carbonModifiers(mods);
-    if (carbonMods == 0) {            // at least one modifier required
+    // Require at least one of Cmd/Ctrl/Alt — Shift ALONE is not enough. A
+    // Shift+<letter> global hotkey would swallow that capital letter in every
+    // app (typing "A" would fire the capture and eat the keystroke).
+    if ((carbonMods & ~CarbonKeys::shiftKey) == 0) {
         QApplication::beep();
         return;                      // keep recording
     }
@@ -1406,7 +1418,17 @@ void SettingsWindow::reloadUI() {
     m_tabGeneral = nullptr;
     m_tabFeatures = nullptr;
     if (QLayout* old = layout()) {
-        delete old;                   // detaches; recorder reparented above
+        // Deleting a QLayout does NOT delete the widgets it managed. The old title
+        // bar + scroll/body tree would leak (and keep painting underneath) on
+        // EVERY rebuild — language change, bar-icon click, per-setting reset, and
+        // two rebuilds per light/dark flip — accumulating across a long tray
+        // session. Collect the top-level managed widgets and delete them too
+        // (m_recorder was reparented to `this` above, so it is not among them).
+        QList<QWidget*> stale;
+        for (int i = 0; i < old->count(); ++i)
+            if (QWidget* w = old->itemAt(i)->widget()) stale.append(w);
+        delete old;
+        for (QWidget* w : stale) w->deleteLater();
     }
     buildUI();
 }
@@ -2311,16 +2333,24 @@ bool SettingsWindow::setLaunchAtLogin(bool enabled) {
         if (!QDir().mkpath(dir)) return false;
         QFile f(file);
         if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
-        const QString exe = QApplication::applicationFilePath();
-        QByteArray data =
+        // Quote + escape the Exec value per the Desktop Entry spec: an install
+        // path with spaces (e.g. /home/u/My Apps/LightGet) parsed unquoted splits
+        // into program "/home/u/My" + arg "Apps/LightGet", so autostart silently
+        // fails while the toggle reports success (the Windows branch quotes too).
+        QString exe = QApplication::applicationFilePath();
+        exe.replace(QLatin1Char('\\'), QLatin1String("\\\\"));
+        exe.replace(QLatin1Char('"'),  QLatin1String("\\\""));
+        exe.replace(QLatin1Char('`'),  QLatin1String("\\`"));
+        exe.replace(QLatin1Char('$'),  QLatin1String("\\$"));
+        const QByteArray data =
             "[Desktop Entry]\n"
             "Type=Application\n"
             "Name=LightGet\n"
-            "Exec=" + exe.toUtf8() + "\n"
+            "Exec=\"" + exe.toUtf8() + "\"\n"
             "X-GNOME-Autostart-enabled=true\n";
-        f.write(data);
+        const bool ok = f.write(data) == data.size();
         f.close();
-        return true;
+        return ok;
     } else {
         if (!QFileInfo::exists(file)) return true;
         return QFile::remove(file);
