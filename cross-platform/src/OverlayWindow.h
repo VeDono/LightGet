@@ -37,6 +37,7 @@
 #include <QRectF>
 #include <QPointF>
 #include <QVector>
+#include <QPointer>
 #include <optional>
 
 class QVariantAnimation;
@@ -198,7 +199,16 @@ private:
 
     // ===================== State =====================
     QImage m_screenshot;
-    QScreen* m_screen = nullptr;
+    // QPointer so it auto-nulls if the display is unplugged/undocked while the
+    // overlay is up — a raw pointer dangled and the confine/save paths did a
+    // use-after-free under a full-screen shield (the worst place to crash). The
+    // controller also aborts capture on screenRemoved (see TrayApp).
+    QPointer<QScreen> m_screen;
+
+    // A NewSelection drag is pending its beganSelection() emit until it grows
+    // past the click threshold, so an accidental click doesn't wipe other
+    // monitors (see mousePressEvent / mouseMoveEvent).
+    bool m_pendingBeganSelection = false;
 
     std::optional<QRectF> m_selection;
     QVector<Annotation> m_annotations;       // committed, draw order = array order
