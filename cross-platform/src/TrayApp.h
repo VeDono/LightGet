@@ -27,6 +27,7 @@
 
 #include <QObject>
 #include <QVector>
+#include <QString>
 
 class QSystemTrayIcon;
 class QMenu;
@@ -56,6 +57,12 @@ private slots:
 private:
     void setupTray();
     void applyBarIcon();        // custom 18x18 path OR named icon asset
+    // Register `code`/`mods` as the global hotkey. On failure (combo owned by
+    // another app, or a key this platform's backend can't map) surface a
+    // non-blocking notice; when `userInitiated`, roll Settings + registration
+    // back to the last combo that worked so the user is never left hotkey-less.
+    void applyHotkey(uint32_t code, uint32_t mods, bool userInitiated);
+    void refreshCaptureShortcutLabel();   // capture menu row -> current combo
     QMenu* buildMenu();         // rebuilt on language change
     void rebuildMenu();
     void applyMenuTheme();      // (re)apply light/dark stylesheet + icon tints
@@ -81,6 +88,11 @@ private:
     QAction* m_quitAction = nullptr;        // re-tinted by applyMenuTheme()
 
     GlobalHotkey* m_hotKey = nullptr;
+    // Last combo that registered successfully — used to roll back a failed
+    // user-initiated hotkey change (0/0/"" until the first success).
+    uint32_t m_activeHotKeyCode = 0;
+    uint32_t m_activeHotKeyMods = 0;
+    QString  m_activeHotKeyDisplay;
     SettingsWindow* m_settings = nullptr;   // lazily created, cached
 
     QVector<OverlayWindow*> m_overlays;     // one per screen; empty when IDLE

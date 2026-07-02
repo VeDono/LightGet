@@ -227,8 +227,53 @@ void TrayApp::start() {
 
     m_hotKey = new GlobalHotkey(this);
     connect(m_hotKey, &GlobalHotkey::activated, this, &TrayApp::onHotkeyActivated);
-    m_hotKey->registerHotkey(Settings::instance().hotKeyCode(),
-                             Settings::instance().hotKeyModifiers());
+    applyHotkey(Settings::instance().hotKeyCode(),
+                Settings::instance().hotKeyModifiers(), /*userInitiated*/ false);
+}
+
+void TrayApp::refreshCaptureShortcutLabel() {
+    if (!m_captureAction) return;
+    // Keep the '\t' right-aligned-hint form so the combo stays in the shortcut
+    // column (see buildMenu()).
+    m_captureAction->setText(QStringLiteral("%1\t%2").arg(
+        Loc::t(QStringLiteral("menu.capture")),
+        Settings::instance().hotKeyDisplay()));
+}
+
+void TrayApp::applyHotkey(uint32_t code, uint32_t mods, bool userInitiated) {
+    if (!m_hotKey) return;
+
+    if (m_hotKey->registerHotkey(code, mods)) {
+        // Remember the working combo so a later failed change can roll back.
+        m_activeHotKeyCode = code;
+        m_activeHotKeyMods = mods;
+        m_activeHotKeyDisplay = Settings::instance().hotKeyDisplay();
+        return;
+    }
+
+    // Registration failed: the combo is owned by another app, or the key can't
+    // be mapped by this platform's backend. GlobalHotkey::registerHotkey already
+    // tore down any previous registration, so we must not just leave it dead.
+    const QString attempted = Settings::instance().hotKeyDisplay();
+
+    if (userInitiated && (m_activeHotKeyCode != 0 || m_activeHotKeyMods != 0)) {
+        // Roll Settings + registration back to the last combo that worked.
+        Settings& s = Settings::instance();
+        s.setHotKeyCode(m_activeHotKeyCode);
+        s.setHotKeyModifiers(m_activeHotKeyMods);
+        s.setHotKeyDisplay(m_activeHotKeyDisplay);
+        m_hotKey->registerHotkey(m_activeHotKeyCode, m_activeHotKeyMods);
+        refreshCaptureShortcutLabel();
+        if (m_settings) m_settings->refreshHotKeyDisplay();
+    }
+
+    // Tell the user (non-blocking): a modal on every launch would be obnoxious,
+    // and a tray notification is enough to explain why the shortcut is inert.
+    if (m_tray && QSystemTrayIcon::supportsMessages()) {
+        m_tray->showMessage(QStringLiteral("LightGet"),
+                            Loc::t(QStringLiteral("hotkey.conflict")).arg(attempted),
+                            QSystemTrayIcon::Warning, 6000);
+    }
 }
 
 // ===========================================================================
@@ -669,17 +714,11 @@ void TrayApp::openSettings() {
         // hotKeyChanged -> re-register the global hotkey + refresh the Capture
         // menu title to show the new combo.
         connect(m_settings, &SettingsWindow::hotKeyChanged, this, [this]() {
-            if (m_hotKey) {
-                m_hotKey->reregister(Settings::instance().hotKeyCode(),
-                                     Settings::instance().hotKeyModifiers());
-            }
-            if (m_captureAction) {
-                // Keep the right-aligned-hint form ('\t') so the refreshed combo
-                // stays in the shortcut column (see buildMenu()).
-                m_captureAction->setText(QStringLiteral("%1\t%2").arg(
-                    Loc::t(QStringLiteral("menu.capture")),
-                    Settings::instance().hotKeyDisplay()));
-            }
+            // applyHotkey surfaces a conflict and rolls back to the last working
+            // combo on failure, so the user is never silently left hotkey-less.
+            applyHotkey(Settings::instance().hotKeyCode(),
+                        Settings::instance().hotKeyModifiers(), /*userInitiated*/ true);
+            refreshCaptureShortcutLabel();
         });
 
         // languageChanged -> rebuild the whole tray menu (retranslate titles).

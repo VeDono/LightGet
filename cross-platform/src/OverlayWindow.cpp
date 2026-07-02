@@ -47,6 +47,8 @@
 #include <QGraphicsOpacityEffect>
 #include <QStringList>
 #include <QTimer>
+#include <QGuiApplication>
+#include <QInputMethod>
 
 #include <cmath>
 #include <algorithm>
@@ -409,7 +411,17 @@ QRect OverlayWindow::currentDragBounds() const {
         // (drawSelectionChrome), so reserve the band on the top INSIDE too via the
         // top pad covering both placements. All cheap vs. a full-screen repaint.
         const qreal padSide  = kHandleSize;     // handle overhang + border
-        const qreal padTop   = 28;              // size-label band above the top
+        // Size-label band above the top: derived from the SAME 12pt Medium font
+        // drawSelectionChrome uses (fm.height() + 6 gap + 2 bg pad + 2 slack)
+        // instead of a hardcoded 28 — at 120-144 logical font DPI (Linux
+        // scaling) the label is taller than 28px and dragging left stale
+        // label-top ghosts. Static: font DPI is fixed for the process lifetime.
+        static const qreal padTop = [] {
+            QFont f;
+            f.setPointSizeF(12);
+            f.setWeight(QFont::Medium);
+            return QFontMetricsF(f).height() + 6 + 2 + 2;
+        }();
         const qreal labelMax = 160;             // worst-case "9999 × 9999" + bg pad
         r = r.adjusted(-padSide, -padTop,
                        std::max(padSide, labelMax - r.width()), padSide);
@@ -459,11 +471,21 @@ QRect OverlayWindow::currentDragBounds() const {
             minY = std::min(minY, c[i].y()); maxY = std::max(maxY, c[i].y());
         }
         QRect r = QRectF(minX, minY, maxX - minX, maxY - minY).toAlignedRect();
-        // Snap guides (drawn while moving text) span the WHOLE selection rect, so
-        // when one is active include the selection so the guide line is painted /
-        // erased in the same damaged band.
-        if ((m_snapGuideV || m_snapGuideH) && m_selection)
-            r = r.united(m_selection->toAlignedRect().adjusted(-1, -1, 1, 1));
+        // Snap guides are 1px dashed lines through the selection center
+        // (drawSnapGuides): union only those thin bands, NOT the whole selection
+        // rect — the full union degraded every snapped text-move to a
+        // full-screen repaint on a near-fullscreen selection, exactly while the
+        // user drags the most. The old∪new union in updateDragRegion still
+        // erases a band on the frame its guide turns off.
+        if (m_selection) {
+            const QRect selR = m_selection->toAlignedRect();
+            if (m_snapGuideV)
+                r = r.united(QRect(selR.center().x() - 2, selR.top() - 1,
+                                   5, selR.height() + 2));
+            if (m_snapGuideH)
+                r = r.united(QRect(selR.left() - 1, selR.center().y() - 2,
+                                   selR.width() + 2, 5));
+        }
         return r;
     }
     default:
@@ -665,17 +687,23 @@ void OverlayWindow::drawTextAnnotation(QPainter& p, const Annotation& a) {
         boxW = std::max(boxW, fm.horizontalAdvance(str));
 
     const Qt::Alignment hAlign = toQtAlignment(a.alignment);
-    QTextOption opt(hAlign | Qt::AlignTop);
-    opt.setWrapMode(QTextOption::NoWrap);
 
     p.setFont(font);
     p.setPen(a.color);
     for (int i = 0; i < lines.size(); ++i) {
-        // Each line occupies a full-box-width rect; QPainter aligns the glyphs
-        // within it according to hAlign (left/center/right).
+        // Align each line inside the box width manually and draw at a BASELINE
+        // POINT: the rect overload of drawText CLIPS glyph ink to the rect, and
+        // an advance-width box amputates italic overhang / negative bearings at
+        // the edges (~8px of the last glyph at 72pt italic). Point-based
+        // drawText never clips; baseline = line top + ascent reproduces the
+        // exact vertical position AlignTop gave the rect overload.
+        const QString& line = lines[i];
+        const qreal adv = fm.horizontalAdvance(line);
+        qreal dx = 0;
+        if (hAlign & Qt::AlignHCenter)    dx = (boxW - adv) / 2.0;
+        else if (hAlign & Qt::AlignRight) dx = boxW - adv;
         const qreal top = a.start.y() + i * lineHeight;
-        const QRectF lineRect(a.start.x(), top, boxW, lineHeight);
-        p.drawText(lineRect, lines[i], opt);
+        p.drawText(QPointF(a.start.x() + dx, top + fm.ascent()), line);
     }
     p.restore();
 }
@@ -979,6 +1007,11 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
                 setCursor(Qt::CrossCursor);
             }
             beginCustomCursorDrag();
+            // Seed the dirty-rect cache with the freshly-committed text's bounds
+            // (like every other drag start does) so the FIRST move erases the old
+            // size/angle — without it a fast resize/rotate flick left ghost
+            // trails that survived until the full repaint at mouse release.
+            m_lastPaintedDirty = currentDragBounds();
         }
         update();
         return;
@@ -1072,7 +1105,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
                 a.lineWidth = m_lineWidth;
                 a.start = p;
                 a.end = p;
-                a.points = {p};
+                if (m_tool == Tool::Pen) a.points = {p};   // only Pen reads the trail
                 m_current = a;
                 m_dragMode = DragMode::Draw;
             }
@@ -1125,7 +1158,10 @@ void OverlayWindow::mouseMoveEvent(QMouseEvent* e) {
     case DragMode::Draw:
         if (m_current) {
             m_current->end = p;
-            m_current->points.append(p);
+            // Only the Pen consumes the point trail (drawAnnotation); appending
+            // for Rect/Arrow/Line just bloated the committed annotation (and its
+            // undo/redo copies) by hundreds of points per slow drag.
+            if (m_current->tool == Tool::Pen) m_current->points.append(p);
         }
         break;
     case DragMode::ResizeText:
@@ -1201,7 +1237,28 @@ void OverlayWindow::mouseReleaseEvent(QMouseEvent* e) {
 
     switch (m_dragMode) {
     case DragMode::Draw:
-        if (m_current) { m_annotations.append(*m_current); m_redoStack.clear(); }
+        if (m_current) {
+            // Discard degenerate zero-drag clicks (mirrors the 4px text-move
+            // threshold below): an accidental click used to commit an invisible
+            // Rect/Line/Pen — a phantom undo step — or, for Arrow, bake a stray
+            // ~12px arrowhead blob into the output, and always wiped the redo
+            // stack. Pen measures its points' bounding box so a scribble that
+            // returns near its start still counts as a real stroke.
+            bool degenerate;
+            if (m_current->tool == Tool::Pen) {
+                qreal minX = m_current->start.x(), maxX = minX;
+                qreal minY = m_current->start.y(), maxY = minY;
+                for (const QPointF& pt : m_current->points) {
+                    minX = std::min(minX, pt.x()); maxX = std::max(maxX, pt.x());
+                    minY = std::min(minY, pt.y()); maxY = std::max(maxY, pt.y());
+                }
+                degenerate = (maxX - minX) < 4 && (maxY - minY) < 4;
+            } else {
+                degenerate = std::hypot(up.x() - m_dragStart.x(),
+                                        up.y() - m_dragStart.y()) < 4;
+            }
+            if (!degenerate) { m_annotations.append(*m_current); m_redoStack.clear(); }
+        }
         m_current.reset();
         break;
     case DragMode::MoveText:
@@ -1347,6 +1404,16 @@ void OverlayWindow::animateToolbarIn() {
     slide->setEndValue(finalPos);
     slide->setEasingCurve(QEasingCurve::OutCubic);
 
+    // The effect exists only for this 160ms fade — remove it when done. A widget
+    // with a graphics effect renders through an offscreen pixmap on EVERY repaint
+    // (even at opacity 1.0), and the toolbar repaints per mouse move while the
+    // selection is dragged: a permanent Retina-sized tax for a long-finished
+    // animation. setGraphicsEffect(nullptr) deletes the effect and restores
+    // direct painting.
+    connect(fade, &QPropertyAnimation::finished, m_toolbar, [tb = m_toolbar]() {
+        tb->setGraphicsEffect(nullptr);
+    });
+
     fade->start(QAbstractAnimation::DeleteWhenStopped);
     slide->start(QAbstractAnimation::DeleteWhenStopped);
 }
@@ -1443,7 +1510,14 @@ void OverlayWindow::presentEditor(const QPointF& origin, qreal fontSize,
 
     editor->setAlignment(toQtAlignment(align));
     editor->setPlainText(text);
-    editor->setGeometry(static_cast<int>(origin.x()), static_cast<int>(origin.y()),
+    // Place the editor so its FIRST GLYPH (not the widget corner) sits at
+    // `origin`: QTextEdit insets text by documentMargin (4px) from the widget
+    // edge, while the committed annotation renders its glyphs exactly at
+    // a.start — without this offset every text visibly jumped ~4px between
+    // editing and committed rendering. endTextEditing() adds the margin back.
+    const qreal docM = editor->document()->documentMargin();
+    editor->setGeometry(static_cast<int>(origin.x() - docM),
+                        static_cast<int>(origin.y() - docM),
                         44, static_cast<int>(fontSize + 8));
 
     m_textEditor = editor;
@@ -1476,10 +1550,20 @@ void OverlayWindow::sizeFieldToFit() {
     QFontMetricsF fm(font);
     QString s = m_textEditor->toPlainText();
     if (s.isEmpty()) s = " ";
-    QRectF bounding = fm.boundingRect(QRectF(0, 0, 600, 1e7),
-                                      Qt::AlignLeft | Qt::TextWordWrap, s);
-    const qreal w = std::max<qreal>(40, std::ceil(bounding.width()) + 14);
-    const qreal h = std::max<qreal>(font.pointSizeF() + 8, std::ceil(bounding.height()) + 8);
+    // Measure exactly how the editor lays text out: per-line advance under
+    // NoWrap (the old word-wrapped 600px measurement sized a long line as if it
+    // wrapped, so the NoWrap editor scrolled it out of view sideways) and the
+    // same fixed 1.15x line pitch applyAlignmentToEditor forces (the font's
+    // natural lineSpacing under-measured multi-line text, clipping the last
+    // line's bottom).
+    const QStringList lines = s.split(QLatin1Char('\n'));
+    qreal maxAdv = 0;
+    for (const QString& line : lines)
+        maxAdv = std::max(maxAdv, fm.horizontalAdvance(line));
+    const qreal pitch = fm.height() * 1.15;
+    const qreal w = std::max<qreal>(40, std::ceil(maxAdv) + 14);
+    const qreal h = std::max<qreal>(font.pointSizeF() + 8,
+                                    std::ceil(lines.size() * pitch) + 8);
     m_textEditor->resize(static_cast<int>(w), static_cast<int>(h));
 
     // With NoWrap the document otherwise has no reference width, so per-block
@@ -1670,6 +1754,11 @@ void OverlayWindow::cancelTextEditing() { endTextEditing(false); }
 void OverlayWindow::endTextEditing(bool commit) {
     if (!m_textEditor || m_endingTextEditing) return;
     m_endingTextEditing = true;
+    // Flush any in-flight IME composition (CJK preedit) into the document BEFORE
+    // reading toPlainText() below: a click-away/Done commit would otherwise
+    // silently drop composed-but-unconfirmed characters (preedit only
+    // auto-commits on focus-out, which happens after the text is captured).
+    QGuiApplication::inputMethod()->commit();
     if (m_textPanel) m_textPanel->closePopup();   // don't leave the swatch popup orphaned
 
     QTextEdit* field = m_textEditor;
@@ -1677,7 +1766,12 @@ void OverlayWindow::endTextEditing(bool commit) {
 
     const QString text = field->toPlainText();
     const QString trimmed = text.trimmed();
-    const QPointF origin(field->geometry().left(), field->geometry().top());
+    // The annotation anchor is where the first GLYPH goes (drawTextAnnotation
+    // draws at a.start), which sits documentMargin (4px) inside the widget —
+    // mirror of presentEditor's outward offset.
+    const qreal docM = field->document()->documentMargin();
+    const QPointF origin(field->geometry().left() + docM,
+                         field->geometry().top() + docM);
     const qreal size = field->font().pointSizeF();
     // Foreground color: stored alignment is the reliable source (field.alignment
     // can lag during editing); color stays whatever was set on the field.
@@ -2061,7 +2155,12 @@ void OverlayWindow::saveToFile() {
 
 QString OverlayWindow::defaultScreenshotName() const {
     const QString stamp = QDateTime::currentDateTime().toString("yyyy-MM-dd 'at' HH.mm.ss");
-    return QString("Screenshot %1.png").arg(stamp);
+    // Localized base name ("Screenshot" / "Снимок" / "Знімок"): the
+    // save.filename key shipped in every language table but was never used, so
+    // non-English users always got English filenames. The timestamp format
+    // deliberately avoids ':' (invalid in Windows filenames).
+    const QString base = QFileInfo(Loc::t(QStringLiteral("save.filename"))).completeBaseName();
+    return QStringLiteral("%1 %2.png").arg(base, stamp);
 }
 
 QString OverlayWindow::makeSaveUrl(const QString& folder) const {
