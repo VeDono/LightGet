@@ -211,6 +211,10 @@ void GlobalHotkey::unregisterHotkey() {
 
 #include <QAbstractNativeEventFilter>
 #include <QCoreApplication>
+#include <QGuiApplication>
+// QNativeInterface::QX11Application (Qt's X11 Display/xcb_connection accessors)
+// lives in this opt-in platform header; <QGuiApplication> does NOT pull it in.
+#include <QtGui/qguiapplication_platform.h>
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
 #include <xcb/xcb.h>
@@ -251,9 +255,28 @@ void GlobalHotkey::unregisterHotkey() {
 
 namespace {
 
+// Qt's OWN X11 Display. CRITICAL: a passive XGrabKey delivers the triggered
+// KeyPress only to the GRABBING client. The old code grabbed on a private
+// XOpenDisplay() connection whose event queue was never read, while the filter
+// below watches Qt's xcb connection — so the hotkey could NEVER fire on X11 (and
+// the combo was swallowed system-wide). Grabbing on Qt's display means the
+// KeyPress arrives on Qt's xcb event stream and reaches HotkeyNativeFilter.
 Display* x11Display() {
-    static Display* dpy = XOpenDisplay(nullptr);
-    return dpy;
+    if (auto* x11 = qApp->nativeInterface<QNativeInterface::QX11Application>())
+        return x11->display();
+    return nullptr;
+}
+
+// Temporary X error handler for the XGrabKey block: a combo already owned by
+// another client raises BadAccess ASYNCHRONOUSLY, and with no handler installed
+// Xlib's default handler prints and calls exit() — so a taken hotkey killed the
+// app at startup. Record it and swallow it instead; the caller then fails
+// cleanly and surfaces the conflict.
+bool s_x11GrabFailed = false;
+int (*s_prevX11Handler)(Display*, XErrorEvent*) = nullptr;
+int x11GrabErrorHandler(Display* d, XErrorEvent* e) {
+    if (e->error_code == BadAccess) { s_x11GrabFailed = true; return 0; }
+    return s_prevX11Handler ? s_prevX11Handler(d, e) : 0;
 }
 
 // Carbon virtual-key -> X11 KeySym. Mirrors the Windows table.
@@ -374,15 +397,27 @@ bool GlobalHotkey::registerHotkey(uint32_t carbonKeyCode, uint32_t carbonModifie
     unsigned int baseMods = carbonModsToX11(carbonModifiers);
     Window root = DefaultRootWindow(dpy);
 
-    // Grab every NumLock/CapsLock lock-mask variant so the combo fires
-    // regardless of lock state. XGrabKey returns void (errors arrive
-    // asynchronously as BadAccess if another client owns the combo); reaching
-    // a clean XSync is treated as success.
+    // Grab every NumLock/CapsLock lock-mask variant so the combo fires regardless
+    // of lock state, under a temporary error handler so a BadAccess (combo owned
+    // by another client) is recorded instead of exiting the app.
+    s_x11GrabFailed = false;
+    s_prevX11Handler = XSetErrorHandler(x11GrabErrorHandler);
     for (unsigned int lock : kLockMasks) {
         XGrabKey(dpy, kc, baseMods | lock, root, /*owner_events*/ False,
                  GrabModeAsync, GrabModeAsync);
     }
-    XSync(dpy, False);
+    XSync(dpy, False);   // flush so any BadAccess is delivered before we restore
+    XSetErrorHandler(s_prevX11Handler);
+
+    if (s_x11GrabFailed) {
+        // Another client owns the combo: undo whatever partial grab we made and
+        // fail so applyHotkey() can surface it / roll back.
+        for (unsigned int lock : kLockMasks)
+            XUngrabKey(dpy, kc, baseMods | lock, root);
+        XSync(dpy, False);
+        m_registered = false;
+        return false;
+    }
 
     d->keycode = kc;
     d->baseMods = baseMods;

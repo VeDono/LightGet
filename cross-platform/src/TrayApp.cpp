@@ -212,6 +212,11 @@ TrayApp::~TrayApp() {
         w->deleteLater();
     }
     m_overlays.clear();
+    // Quitting (⌘Q) while an overlay was up never went through closeOverlays, so
+    // the +1 retained frontmost-app handle leaked and the app whose focus the
+    // shield stole (e.g. a fullscreen game) was never re-activated. restore
+    // handles the null case and both releases the handle and hands focus back.
+    restorePreviousApp();
     delete m_settings;
     delete m_menu;     // owns its QActions
     delete m_tray;
@@ -224,6 +229,22 @@ void TrayApp::start() {
     // accessory app could route ⌘C/⌘V into NSTextFields; Qt's QTextEdit handles
     // those shortcuts itself, so there is no analog to port.)
     setupTray();
+
+    // Abort an in-flight capture if a display is unplugged/undocked while the
+    // overlay is up: the per-screen OverlayWindow holds that QScreen, and
+    // tearing the session down cleanly avoids operating on a dead screen mid-drag.
+    connect(qApp, &QGuiApplication::screenRemoved, this, [this](QScreen*) {
+        if (m_overlayShown || m_isCapturing) closeOverlays();
+    });
+
+    // If there's no system tray (e.g. stock GNOME without an AppIndicator host),
+    // the icon never appears and the app would be invisible AND unreachable
+    // (window-less, quitOnLastWindowClosed=false). Give it a visible surface with
+    // a Quit control so it's never a stuck background process. Tray hosts can
+    // register late, so check after a short grace delay.
+    QTimer::singleShot(4000, this, [this]() {
+        if (!QSystemTrayIcon::isSystemTrayAvailable()) openSettings();
+    });
 
     m_hotKey = new GlobalHotkey(this);
     connect(m_hotKey, &GlobalHotkey::activated, this, &TrayApp::onHotkeyActivated);
@@ -267,9 +288,12 @@ void TrayApp::applyHotkey(uint32_t code, uint32_t mods, bool userInitiated) {
         if (m_settings) m_settings->refreshHotKeyDisplay();
     }
 
-    // Tell the user (non-blocking): a modal on every launch would be obnoxious,
-    // and a tray notification is enough to explain why the shortcut is inert.
-    if (m_tray && QSystemTrayIcon::supportsMessages()) {
+    // Tell the user (non-blocking) — but only for a change they just made. A
+    // startup failure notice would fire on EVERY launch on Wayland (where the
+    // X11 hotkey backend can't register at all), which reads as broken; the tray
+    // capture path still works there. A real user-initiated conflict is where the
+    // feedback matters, and there the combo has already been rolled back above.
+    if (userInitiated && m_tray && QSystemTrayIcon::supportsMessages()) {
         m_tray->showMessage(QStringLiteral("LightGet"),
                             Loc::t(QStringLiteral("hotkey.conflict")).arg(attempted),
                             QSystemTrayIcon::Warning, 6000);
@@ -287,6 +311,18 @@ void TrayApp::setupTray() {
     // No setContextMenu(): we pop m_menu MANUALLY in onTrayActivated so we can
     // center it horizontally under the icon. The native context menu can't be
     // repositioned (the OS anchors it to the status item).
+#if defined(Q_OS_LINUX)
+    // EXCEPT on Wayland: clients can't place top-levels at global coordinates and
+    // the StatusNotifierItem icon has no queryable geometry, so the manual popup
+    // misfires (opens in the wrong place / not at all). Hand the menu to the SNI
+    // host to show + position (loses the QSS styling there, but it actually
+    // appears where the user clicked). onTrayActivated skips its popup when a
+    // context menu is set.
+    if (QGuiApplication::platformName()
+            .startsWith(QLatin1String("wayland"), Qt::CaseInsensitive)) {
+        m_tray->setContextMenu(m_menu);
+    }
+#endif
     connect(m_tray, &QSystemTrayIcon::activated, this,
             [this](QSystemTrayIcon::ActivationReason reason) {
                 onTrayActivated(static_cast<int>(reason));
@@ -425,6 +461,9 @@ void TrayApp::rebuildMenu() {
 void TrayApp::onTrayActivated(int reason) {
     Q_UNUSED(reason);   // any activation (left/right/etc.) opens the menu
     if (!m_menu || !m_tray) return;
+    // On Wayland the menu is handed to the SNI host (setContextMenu); it shows
+    // itself, so don't also pop our own.
+    if (m_tray->contextMenu()) return;
     applyMenuTheme();   // re-sync to the current theme before showing
     // Show the menu CENTERED horizontally under the tray icon: the menu's center
     // sits right below the icon's center. Use the icon's screen rect when the
@@ -489,10 +528,18 @@ void TrayApp::startCapture() {
     // for the hotkey path (no menu is open) and off macOS.
     if (m_menu) m_menu->hide();
 
-    // No Screen Recording permission -> show ONLY the system prompt (no
-    // duplicate message of our own) and bail. No-op / true off macOS.
+    // No Screen Recording permission. The system prompt only appears the FIRST
+    // time it's requested per install; after the user denies once, requesting
+    // again is a silent no-op — so capture used to do nothing forever with zero
+    // feedback. Ask once; on any later denied attempt show the guidance dialog
+    // with the deep link + "grant, then relaunch" note. No-op / true off macOS.
     if (!ScreenCapture::preflightPermission()) {
-        ScreenCapture::requestPermission();
+        if (!m_permissionRequested) {
+            m_permissionRequested = true;
+            ScreenCapture::requestPermission();
+        } else {
+            presentCaptureError();
+        }
         return;
     }
 
@@ -591,25 +638,33 @@ void TrayApp::onCaptureFinished() {
 }
 
 void TrayApp::presentCaptureError() {
-    // Message box + deep-link to the Screen Recording settings pane.
     QMessageBox box;
     box.setIcon(QMessageBox::Warning);
     box.setText(Loc::t(QStringLiteral("error.title")));
+
+#if defined(Q_OS_MAC)
+    // macOS: Screen Recording permission + a deep link to the settings pane.
     box.setInformativeText(Loc::t(QStringLiteral("error.body")));
     QPushButton* openBtn =
         box.addButton(Loc::t(QStringLiteral("error.openSettings")), QMessageBox::AcceptRole);
     box.addButton(Loc::t(QStringLiteral("error.close")), QMessageBox::RejectRole);
     box.setDefaultButton(openBtn);
-
     box.exec();
     if (box.clickedButton() == openBtn) {
-#if defined(Q_OS_MAC)
         QDesktopServices::openUrl(QUrl(QStringLiteral(
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")));
-#endif
-        // On Windows/Linux there is no per-app screen-capture permission pane,
-        // so the deep link is a macOS-only action (no-op elsewhere).
     }
+#else
+    // Off macOS there is no Screen Recording pane, so no "Open Settings" button
+    // (it used to be the highlighted default and did nothing). Wayland gets a
+    // portal-specific hint; X11/Windows a generic message.
+    const bool wayland = QGuiApplication::platformName()
+        .startsWith(QLatin1String("wayland"), Qt::CaseInsensitive);
+    box.setInformativeText(Loc::t(wayland ? QStringLiteral("error.body.wayland")
+                                          : QStringLiteral("error.body.generic")));
+    box.addButton(Loc::t(QStringLiteral("error.close")), QMessageBox::RejectRole);
+    box.exec();
+#endif
 }
 
 // ===========================================================================

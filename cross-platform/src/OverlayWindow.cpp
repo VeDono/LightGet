@@ -49,6 +49,8 @@
 #include <QTimer>
 #include <QGuiApplication>
 #include <QInputMethod>
+#include <QMessageBox>
+#include <QPointer>
 
 #include <cmath>
 #include <algorithm>
@@ -431,14 +433,16 @@ QRect OverlayWindow::currentDragBounds() const {
         if (!m_current) return QRect();
         const Annotation& a = *m_current;
         QRectF r;
-        if (a.tool == Tool::Pen && !a.points.isEmpty()) {
+        if (a.tool == Tool::Pen && a.points.size() >= 2) {
+            // Only the NEWEST segment changed this move — damage just that (the
+            // previous frame's band is unioned in by updateDragRegion, and the
+            // already-drawn stroke persists on the opaque surface). The old code
+            // rescanned ALL points for the bbox and damaged the whole stroke, so
+            // a long scribble degenerated into a near-fullscreen Retina repaint
+            // per move. rectFrom of the last two points is O(1).
+            r = QRectF(a.points[a.points.size() - 2], a.points.last()).normalized();
+        } else if (a.tool == Tool::Pen && !a.points.isEmpty()) {
             r = QRectF(a.points.first(), a.points.first());
-            for (const QPointF& pt : a.points) {
-                r.setLeft(std::min(r.left(), pt.x()));
-                r.setTop(std::min(r.top(), pt.y()));
-                r.setRight(std::max(r.right(), pt.x()));
-                r.setBottom(std::max(r.bottom(), pt.y()));
-            }
         } else {
             r = rectFrom(a.start, a.end);
         }
@@ -1042,7 +1046,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
             hideToolbar();
             m_dragMode = DragMode::NewSelection;
             beginCustomCursorDrag();   // confine the pointer to this screen
-            emit beganSelection();
+            m_pendingBeganSelection = true;   // emit once the drag is real (mouseMove)
         } else if (m_tool == Tool::Text) {
             // ----- text mouse-down (mirrors handleTextMouseDown) -----
             bool handled = false;
@@ -1113,7 +1117,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
     } else {
         m_dragMode = DragMode::NewSelection;
         beginCustomCursorDrag();   // confine the pointer to this screen
-        emit beganSelection();
+        m_pendingBeganSelection = true;   // emit once the drag is real (mouseMove)
     }
     // Seed the dirty-rect cache with the gesture's pre-move bounds (null for a
     // brand-new selection that has no rect yet) so the first mouseMove erases the
@@ -1140,6 +1144,15 @@ void OverlayWindow::mouseMoveEvent(QMouseEvent* e) {
     switch (m_dragMode) {
     case DragMode::NewSelection:
         m_selection = rectFrom(m_dragStart, p);
+        // Only once the drag is a REAL selection (not an accidental click) tell
+        // the controller to clear the OTHER monitors. A stray 1px click on a
+        // dimmed second display used to wipe the selection + every annotation
+        // (and discard in-progress typed text) on the monitor being worked on.
+        if (m_pendingBeganSelection && m_selection &&
+            (m_selection->width() > 4 || m_selection->height() > 4)) {
+            m_pendingBeganSelection = false;
+            emit beganSelection();
+        }
         break;
     case DragMode::MoveSelection: {
         setCursor(Qt::ClosedHandCursor);
@@ -1271,6 +1284,7 @@ void OverlayWindow::mouseReleaseEvent(QMouseEvent* e) {
         break;
     }
     m_dragMode = DragMode::None;
+    m_pendingBeganSelection = false;   // gesture ended; no deferred emit pending
     m_snapGuideV = false; m_snapGuideH = false;
     m_lastPaintedDirty = QRect();   // gesture over: drop the dirty-rect cache
 
@@ -1446,6 +1460,12 @@ void OverlayWindow::onSelectColor(const QColor& c) {
 // ============================================================================
 
 void OverlayWindow::undoLast() {
+    // Commit any live inline edit FIRST (like copy/save/tool-switch do). The
+    // toolbar Undo/Redo buttons stay clickable while the editor is open, and
+    // without this takeLast() ran while m_editingIndex still indexed the array —
+    // it stole the annotation being edited, and the later commit re-appended a
+    // duplicate and cleared the redo stack, corrupting undo history.
+    if (m_textEditor) commitTextEditing();
     if (m_annotations.isEmpty()) return;
     m_redoStack.append(m_annotations.takeLast());   // remember for redo
     if (m_activeTextIndex) m_activeTextIndex.reset();
@@ -1454,6 +1474,7 @@ void OverlayWindow::undoLast() {
 }
 
 void OverlayWindow::redoLast() {
+    if (m_textEditor) commitTextEditing();   // same guard as undoLast()
     if (m_redoStack.isEmpty()) return;
     m_annotations.append(m_redoStack.takeLast());
     update();
@@ -2103,11 +2124,21 @@ void OverlayWindow::saveToFile() {
     // Silent save to a configured folder, plus clipboard.
     const auto folder = Settings::instance().saveFolderPath();
     if (folder) {
+        // A deleted/renamed/unmounted/read-only save folder used to lose the
+        // screenshot silently: the write failed, the overlay closed as if saved,
+        // and the only copy was the clipboard (overwritten by the next copy).
+        // Make the directory if missing, and only treat it as done when the write
+        // actually succeeds — otherwise fall through to the file dialog so the
+        // user can still save it somewhere and is told what happened.
+        QDir().mkpath(*folder);
         const QString url = makeSaveUrl(*folder);
-        img.save(url, "PNG");
+        if (img.save(url, "PNG")) {
+            writeToClipboard(img);
+            finish();
+            return;
+        }
+        // Save failed — clipboard still holds it; drop to the dialog below.
         writeToClipboard(img);
-        finish();
-        return;
     }
 
     // No folder set -> file dialog with the default macOS-style name.
@@ -2147,8 +2178,15 @@ void OverlayWindow::saveToFile() {
     if (dialog.exec() == QDialog::Accepted) {
         const QStringList files = dialog.selectedFiles();
         if (!files.isEmpty() && !files.first().isEmpty()) {
-            img.save(files.first(), "PNG");
-            writeToClipboard(img);
+            if (img.save(files.first(), "PNG")) {
+                writeToClipboard(img);
+            } else {
+                // Don't pretend it saved. The clipboard still has the image.
+                writeToClipboard(img);
+                QMessageBox::warning(nullptr, Loc::t(QStringLiteral("save.failed.title")),
+                                     Loc::t(QStringLiteral("save.failed.body"))
+                                         .arg(files.first()));
+            }
         }
     }
 }

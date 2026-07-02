@@ -99,6 +99,7 @@ private:
     bool m_isCapturing = false;             // guards the async capture window
     bool m_overlayShown = false;            // true while overlays are up (overlay!=nil)
     bool m_closing = false;                 // guards the deferred animated-dim teardown
+    bool m_permissionRequested = false;     // macOS: system Screen-Recording prompt shown once
 
     // Opaque handle to the previously-active app/window (platform-specific).
     void* m_previousApp = nullptr;
