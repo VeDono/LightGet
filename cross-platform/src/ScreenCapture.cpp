@@ -47,7 +47,55 @@ extern bool MacNative_hasScreenCapturePermission();
 extern void MacNative_requestScreenCapturePermission();
 #endif
 
+// Wayland: capture goes through the xdg-desktop-portal Screenshot backend
+// (WaylandPortal.cpp, Linux+QtDBus only), since grabWindow(0) returns null there.
+#if defined(Q_OS_LINUX) && defined(HAVE_QTDBUS)
+extern QImage LightGet_captureDesktopViaPortal();
+#endif
+
 namespace ScreenCapture {
+
+#if defined(Q_OS_LINUX) && defined(HAVE_QTDBUS)
+static bool isWaylandSession() {
+    return QGuiApplication::platformName()
+        .startsWith(QLatin1String("wayland"), Qt::CaseInsensitive);
+}
+
+// Grab the whole desktop via the portal, then crop one image per QScreen so the
+// per-screen overlay model is preserved. The portal returns a single PNG of the
+// virtual desktop in native pixels; we map each screen's logical geometry into it
+// with a uniform scale (exact for uniform-DPI setups; approximate but safe for
+// mixed-DPI). Returns empty on failure.
+static std::vector<CapturedScreen> captureViaPortal(ScreenCaptureError& outError) {
+    std::vector<CapturedScreen> result;
+    const QImage desktop = LightGet_captureDesktopViaPortal();
+    if (desktop.isNull()) { outError = ScreenCaptureError::NoDisplay; return {}; }
+
+    QScreen* prim = QGuiApplication::primaryScreen();
+    const QRect virt = prim ? prim->virtualGeometry() : desktop.rect();
+    const double sx = virt.width()  > 0 ? double(desktop.width())  / virt.width()  : 1.0;
+    const double sy = virt.height() > 0 ? double(desktop.height()) / virt.height() : 1.0;
+
+    for (QScreen* screen : QGuiApplication::screens()) {
+        const QRect g = screen->geometry();
+        QRect cropPx(qRound((g.x() - virt.x()) * sx), qRound((g.y() - virt.y()) * sy),
+                     qRound(g.width() * sx), qRound(g.height() * sy));
+        cropPx = cropPx.intersected(desktop.rect());
+        if (cropPx.isEmpty()) continue;
+        QImage sub = desktop.copy(cropPx);
+        sub.setDevicePixelRatio(screen->devicePixelRatio());
+        result.push_back(CapturedScreen{ sub, screen });
+    }
+    if (result.empty() && prim) {
+        // Fallback: hand the whole grab to the primary screen.
+        QImage d = desktop;
+        d.setDevicePixelRatio(prim->devicePixelRatio());
+        result.push_back(CapturedScreen{ d, prim });
+    }
+    if (result.empty()) outError = ScreenCaptureError::NoDisplay;
+    return result;
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Permission gate.
@@ -133,6 +181,12 @@ static QImage grabScreenPixels(QScreen* screen) {
 // ---------------------------------------------------------------------------
 std::vector<CapturedScreen> captureAllDisplays(ScreenCaptureError& outError) {
     outError = ScreenCaptureError::None;
+
+#if defined(Q_OS_LINUX) && defined(HAVE_QTDBUS)
+    if (isWaylandSession())
+        return captureViaPortal(outError);
+#endif
+
     std::vector<CapturedScreen> result;
 
     const QList<QScreen*> screens = QGuiApplication::screens();
@@ -160,6 +214,17 @@ std::vector<CapturedScreen> captureAllDisplays(ScreenCaptureError& outError) {
 // ---------------------------------------------------------------------------
 CapturedScreen captureDisplayUnderCursor(ScreenCaptureError& outError) {
     outError = ScreenCaptureError::None;
+
+#if defined(Q_OS_LINUX) && defined(HAVE_QTDBUS)
+    if (isWaylandSession()) {
+        auto all = captureViaPortal(outError);
+        if (all.empty()) return CapturedScreen{};
+        QScreen* target = QGuiApplication::screenAt(QCursor::pos());
+        for (const auto& cs : all)
+            if (cs.screen == target) return cs;
+        return all.front();
+    }
+#endif
 
     const QPoint mouse = QCursor::pos();
     QScreen* screen = QGuiApplication::screenAt(mouse);
