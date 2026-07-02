@@ -135,7 +135,7 @@ jobs:
           # Version from the git tag (v1.2.3 -> 1.2.3); fall back to the .iss default
           # when built off a branch (workflow_dispatch).
           $ref = "${{ github.ref_name }}"
-          if ($ref -match '^v(\d+\.\d+\.\d+)') { $ver = $Matches[1] } else { $ver = "1.0.3" }
+          if ($ref -match '^v(\d+\.\d+\.\d+)') { $ver = $Matches[1] } else { $ver = "1.0.4" }
           & $iscc "/DMyAppVersion=$ver" "/DDistDir=$env:GITHUB_WORKSPACE\dist" "cross-platform/packaging/windows/LightGet.iss"
 
       - uses: actions/upload-artifact@v4
