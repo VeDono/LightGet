@@ -58,6 +58,9 @@ public:
     explicit SettingsWindow(QWidget* parent = nullptr);
 
     void showCentered();    // center + raise + activate (accessory-app focus dance)
+    // Re-sync the shortcut recorder button to Settings::hotKeyDisplay() — called
+    // after TrayApp rolls a failed hotkey change back to the previous combo.
+    void refreshHotKeyDisplay();
 
 signals:
     void hotKeyChanged();

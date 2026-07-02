@@ -60,6 +60,11 @@ const QHash<QString, QHash<QString, QString>>& table() {
           {QStringLiteral("ru"), QStringLiteral("Закрыть")},
           {QStringLiteral("uk"), QStringLiteral("Закрити")}}},
 
+        {QStringLiteral("hotkey.conflict"),
+         {{QStringLiteral("en"), QStringLiteral("The shortcut %1 couldn't be registered — another app is probably already using it. Pick a different combination.")},
+          {QStringLiteral("ru"), QStringLiteral("Не удалось назначить сочетание %1 — вероятно, оно уже занято другим приложением. Выбери другую комбинацию.")},
+          {QStringLiteral("uk"), QStringLiteral("Не вдалося призначити комбінацію %1 — імовірно, вона вже зайнята іншим застосунком. Обери іншу комбінацію.")}}},
+
         {QStringLiteral("settings.title"),
          {{QStringLiteral("en"), QStringLiteral("LightGet Settings")},
           {QStringLiteral("ru"), QStringLiteral("Настройки LightGet")},
