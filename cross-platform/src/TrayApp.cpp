@@ -508,6 +508,29 @@ void TrayApp::onTrayActivated(int reason) {
 // Capture pipeline (Spec 2 §2.9)
 // ===========================================================================
 
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+#include <malloc/malloc.h>
+// RAII @autoreleasepool barrier around the heavy synchronous capture paths.
+// Without it, autoreleased CGImages (one full-screen buffer per display per
+// capture) accumulated in a never-draining main-thread pool chain — >1 GB
+// footprint over a long session (verified with leaks --trace on a live run).
+// Implemented in MacNative.mm. Declared OUTSIDE the anonymous namespace so the
+// references get external linkage (inside it they'd become internal symbols
+// that never resolve against the .mm definitions).
+extern void* MacNative_autoreleasePoolPush();
+extern void MacNative_autoreleasePoolPop(void*);
+namespace {
+struct MacPoolBarrier {
+    void* pool;
+    MacPoolBarrier() : pool(MacNative_autoreleasePoolPush()) {}
+    ~MacPoolBarrier() { MacNative_autoreleasePoolPop(pool); }
+};
+} // namespace
+#define LIGHTGET_MAC_POOL_BARRIER MacPoolBarrier macPoolBarrier_
+#else
+#define LIGHTGET_MAC_POOL_BARRIER do {} while (false)
+#endif
+
 void TrayApp::onHotkeyActivated() {
     startCapture();
 }
@@ -544,6 +567,10 @@ void TrayApp::startCapture() {
     }
 
     m_isCapturing = true;
+
+    // Scope an explicit autorelease pool over the grab + overlay construction so
+    // per-capture Cocoa litter (CGImages etc.) dies when this function returns.
+    LIGHTGET_MAC_POOL_BARRIER;
 
     // HARD ORDERING INVARIANT: capture pixels for every display BEFORE any
     // overlay (dim shield) is shown, so neither the dim nor annotations leak
@@ -682,15 +709,27 @@ void TrayApp::closeOverlays() {
     // The copy/save actions have already completed before finished() fired, so
     // nothing here is reordered relative to the capture result.
     auto teardown = [this]() {
-        for (OverlayWindow* w : m_overlays) {
-            w->hide();
-            w->deleteLater();
-        }
-        m_overlays.clear();
+        {
+            // Pool barrier: release the capture session's autoreleased Cocoa
+            // objects now instead of letting them sit in the outer pool chain.
+            LIGHTGET_MAC_POOL_BARRIER;
+            for (OverlayWindow* w : m_overlays) {
+                w->hide();
+                w->deleteLater();
+            }
+            m_overlays.clear();
 
-        // Return focus to the previously-frontmost app (it re-hides its own
-        // cursor in its focus handler, mirroring the game case).
-        restorePreviousApp();
+            // Return focus to the previously-frontmost app (it re-hides its own
+            // cursor in its focus handler, mirroring the game case).
+            restorePreviousApp();
+        }
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+        // The session's multi-megabyte image buffers were just freed; nudge the
+        // allocator to hand the emptied pages back to the OS so the app's
+        // footprint (what Activity Monitor shows) drops with them. Deferred one
+        // tick so the deleteLater()'d overlays above are actually destroyed first.
+        QTimer::singleShot(0, this, [] { malloc_zone_pressure_relief(nullptr, 0); });
+#endif
 
         m_closing = false;
         onCaptureFinished();
