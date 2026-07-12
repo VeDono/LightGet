@@ -2072,6 +2072,28 @@ void OverlayWindow::onTextDone() {
 // Output (Spec 3 §12)
 // ============================================================================
 
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+// RAII @autoreleasepool barrier for the output paths (render + clipboard/save):
+// the full-resolution CGImage/NSData litter these produce otherwise lands in a
+// main-thread pool chain that never drains (see TrayApp.cpp for the matching
+// barrier around the grab).
+// Implemented in MacNative.mm. Declared OUTSIDE the anonymous namespace so the
+// references get external linkage (inside it they'd become internal symbols
+// that never resolve against the .mm definitions).
+extern void* MacNative_autoreleasePoolPush();
+extern void MacNative_autoreleasePoolPop(void*);
+namespace {
+struct OutputPoolBarrier {
+    void* pool;
+    OutputPoolBarrier() : pool(MacNative_autoreleasePoolPush()) {}
+    ~OutputPoolBarrier() { MacNative_autoreleasePoolPop(pool); }
+};
+} // namespace
+#define LIGHTGET_OUTPUT_POOL_BARRIER OutputPoolBarrier outputPoolBarrier_
+#else
+#define LIGHTGET_OUTPUT_POOL_BARRIER do {} while (false)
+#endif
+
 QImage OverlayWindow::renderOutput() const {
     if (!m_selection || m_selection->width() <= 1 || m_selection->height() <= 1)
         return QImage();
@@ -2105,10 +2127,26 @@ QImage OverlayWindow::renderOutput() const {
 }
 
 void OverlayWindow::writeToClipboard(const QImage& img) {
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+    // Bypass QClipboard on macOS: its pasteboard integration strands the image
+    // generation in-process (QtCore static + an NSImage parked in an AppKit
+    // global — verified by reference-tracing a >1 GB long-running session). The
+    // native helper hands eagerly-encoded TIFF bytes to the pasteboard server
+    // and retains nothing past its own @autoreleasepool.
+    QImage rgba = (img.format() == QImage::Format_RGBA8888_Premultiplied)
+                      ? img
+                      : img.convertToFormat(QImage::Format_RGBA8888_Premultiplied);
+    extern void MacNative_setClipboardImage(const unsigned char*, int, int,
+                                            long, double);  // MacNative.mm
+    MacNative_setClipboardImage(rgba.constBits(), rgba.width(), rgba.height(),
+                                rgba.bytesPerLine(), rgba.devicePixelRatio());
+#else
     QApplication::clipboard()->setImage(img);
+#endif
 }
 
 void OverlayWindow::copyToClipboard() {
+    LIGHTGET_OUTPUT_POOL_BARRIER;
     if (m_textEditor) commitTextEditing();
     const QImage img = renderOutput();
     if (img.isNull()) return;
@@ -2117,6 +2155,7 @@ void OverlayWindow::copyToClipboard() {
 }
 
 void OverlayWindow::saveToFile() {
+    LIGHTGET_OUTPUT_POOL_BARRIER;
     if (m_textEditor) commitTextEditing();
     const QImage img = renderOutput();
     if (img.isNull()) return;

@@ -160,6 +160,72 @@ void MacNative_activateApp() {
 }
 
 // ---------------------------------------------------------------------------
+// Autorelease-pool barrier — push/pop an explicit pool around heavy capture
+// work. Measured on a live session (macOS 26): the main thread accumulated a
+// chain of never-draining autorelease pool pages holding a __strong CGImage
+// (full capture-sized pixel buffer) per capture, growing the footprint past
+// 1 GB over days. Scoping our own innermost pool around the synchronous heavy
+// paths (grab, render/clipboard, teardown) guarantees that litter dies with
+// each capture regardless of how the outer Qt/AppKit pools behave.
+// This file builds under ARC, so use the objc runtime's pool primitives (the
+// same calls @autoreleasepool compiles to) instead of NSAutoreleasePool.
+// ---------------------------------------------------------------------------
+extern "C" void* objc_autoreleasePoolPush(void);
+extern "C" void objc_autoreleasePoolPop(void*);
+
+void* MacNative_autoreleasePoolPush() {
+    return objc_autoreleasePoolPush();
+}
+void MacNative_autoreleasePoolPop(void* pool) {
+    if (pool) objc_autoreleasePoolPop(pool);
+}
+
+// ---------------------------------------------------------------------------
+// MacNative_setClipboardImage — write the capture to the general pasteboard
+// natively, bypassing QClipboard.
+//
+// Qt's macOS clipboard retains image generations: reference-tracing a live
+// session showed the current QImage held via a QtCore static AND an NSImage/
+// NSBitmapImageRep chain parked in an AppKit global (pasteboard promise) — a
+// full-resolution buffer (or two) stranded per copy. Writing eagerly-encoded
+// TIFF bytes hands the data to the pasteboard server with no promise machinery
+// and nothing retained in-process past this @autoreleasepool. TIFF is the
+// native-most raster type on macOS: Preview/browsers/editors all paste it.
+// ---------------------------------------------------------------------------
+void MacNative_setClipboardImage(const unsigned char* rgbaPremul, int w, int h,
+                                 long bytesPerRow, double dpr) {
+    if (!rgbaPremul || w <= 0 || h <= 0 || bytesPerRow <= 0) return;
+    @autoreleasepool {
+        CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CFDataRef data = CFDataCreate(kCFAllocatorDefault, rgbaPremul,
+                                      (CFIndex)(bytesPerRow * h));
+        CGDataProviderRef prov = data ? CGDataProviderCreateWithCFData(data) : NULL;
+        CGImageRef cg = prov ? CGImageCreate((size_t)w, (size_t)h, 8, 32,
+                                             (size_t)bytesPerRow, cs,
+                                             (CGBitmapInfo)kCGImageAlphaPremultipliedLast |
+                                                 kCGBitmapByteOrder32Big, // bytes: R,G,B,A
+                                             prov, NULL, false,
+                                             kCGRenderingIntentDefault)
+                             : NULL;
+        if (cg) {
+            NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithCGImage:cg];
+            const double d = dpr > 0 ? dpr : 1.0;
+            [rep setSize:NSMakeSize(w / d, h / d)];   // point size => correct DPI
+            NSData* tiff = [rep TIFFRepresentation];  // eager bytes (ARC frees rep)
+            if (tiff) {
+                NSPasteboard* pb = [NSPasteboard generalPasteboard];
+                [pb clearContents];   // release the previous generation
+                [pb setData:tiff forType:NSPasteboardTypeTIFF];
+            }
+            CGImageRelease(cg);
+        }
+        if (prov) CGDataProviderRelease(prov);
+        if (data) CFRelease(data);
+        if (cs) CGColorSpaceRelease(cs);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TrayApp_forceCursorVisible — defeat an app that hid the system cursor
 // (e.g. a full-screen game using NSCursor.hide / CGDisplayHideCursor / mouselook)
 // so the crosshair is usable on the overlay. Re-associates the mouse and unhides
