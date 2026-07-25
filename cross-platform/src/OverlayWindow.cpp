@@ -385,7 +385,13 @@ void OverlayWindow::ensureBackdrop() {
     pm.fill(Qt::transparent);
     QPainter pp(&pm);
     pp.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    drawImageUpright(pp, m_screenshot, QRectF(QPointF(0, 0), QSizeF(logical)));
+    // Paint over the pixmap's FULL extent, not just `logical` points: wantPx is
+    // ceil(logical * dpr), so under a fractional scale factor (common on Windows:
+    // 125% / 150%) the last device-pixel column/row would otherwise stay
+    // uninitialised — a 1px seam along the right/bottom edge, which
+    // WA_OpaquePaintEvent leaves showing stale content.
+    const QSizeF cover(wantPx.width() / dpr, wantPx.height() / dpr);
+    drawImageUpright(pp, m_screenshot, QRectF(QPointF(0, 0), cover));
     pp.end();
     m_backdrop = pm;
 }
