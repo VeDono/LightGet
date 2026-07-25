@@ -134,10 +134,13 @@ const QHash<QString, QHash<QString, QString>>& table() {
          {{QStringLiteral("en"), QStringLiteral("Launch at login")},
           {QStringLiteral("ru"), QStringLiteral("Запускать при входе в систему")},
           {QStringLiteral("uk"), QStringLiteral("Запускати під час входу в систему")}}},
-        {QStringLiteral("settings.madeInUkraine"),
-         {{QStringLiteral("en"), QStringLiteral("Made in Ukraine 🇺🇦")},
-          {QStringLiteral("ru"), QStringLiteral("Сделано в Украине 🇺🇦")},
-          {QStringLiteral("uk"), QStringLiteral("Зроблено в Україні 🇺🇦")}}},
+        // No flag emoji in the string: the 🇺🇦 regional-indicator pair has no glyph
+        // in the Windows emoji font and renders as the letters "UA". The footer
+        // draws :/assets/flag_ua.png next to this text instead (SettingsWindow).
+        {QStringLiteral("settings.madeInKharkiv"),
+         {{QStringLiteral("en"), QStringLiteral("Made in Kharkiv")},
+          {QStringLiteral("ru"), QStringLiteral("Сделано в Харькове")},
+          {QStringLiteral("uk"), QStringLiteral("Зроблено в Харкові")}}},
 
         // Colon-free row labels for the redesigned settings card (Direction B).
         // The design shows labels WITHOUT trailing colons; these mirror the

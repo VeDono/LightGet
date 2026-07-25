@@ -31,5 +31,9 @@
     <file alias="assets/photo.png">assets/photo.png</file>
     <file alias="assets/arrow.counterclockwise.png">assets/arrow.counterclockwise.png</file>
     <file alias="assets/arrow.up.left.and.arrow.down.right.png">assets/arrow.up.left.and.arrow.down.right.png</file>
+    <!-- Ukrainian flag for the About footer. Bundled as a real image because the
+         🇺🇦 regional-indicator emoji pair has no glyph in the Windows emoji font
+         (it renders as the letters "UA"). Colour, 72x72 (downscaled at use). -->
+    <file alias="assets/flag_ua.png">assets/flag_ua.png</file>
   </qresource>
 </RCC>
