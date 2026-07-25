@@ -22,6 +22,15 @@
 #include <optional>
 
 // Carbon virtual-key / modifier constants (hardcoded; no Carbon off-macOS).
+//
+// MODIFIER SEMANTICS across platforms (what the recorder stores, what each
+// GlobalHotkey backend registers):
+//   cmdKey     -> macOS ⌘        | Windows Ctrl   | X11 Control
+//   controlKey -> macOS ⌃        | Windows Win    | X11 Super (Mod4)
+//   optionKey  -> macOS ⌥        | Windows Alt    | X11 Alt (Mod1)
+//   shiftKey   -> macOS/Win/X11 Shift
+// (Qt reports ⌘ as ControlModifier and ⌃ as MetaModifier on macOS, so the
+// recorder's Control->cmdKey / Meta->controlKey mapping lines the two up.)
 namespace CarbonKeys {
 constexpr uint32_t kVK_ANSI_2 = 0x13;   // 19
 constexpr uint32_t kVK_Escape = 0x35;   // 53
@@ -29,6 +38,30 @@ constexpr uint32_t cmdKey     = 0x0100; // 256
 constexpr uint32_t shiftKey   = 0x0200; // 512
 constexpr uint32_t optionKey  = 0x0800; // 2048
 constexpr uint32_t controlKey = 0x1000; // 4096
+}
+
+// Persisted hotkey KEY code space.
+//
+// The base representation is a macOS Carbon virtual-key code (kVK_*) — the format
+// the native app writes, kept for compatibility. Carbon cannot name every key a PC
+// keyboard has (PrintScreen, Pause, numpad, F13-F24, OEM punctuation), and on
+// Windows the CHARACTER a key produces depends on the layout and on AltGr — which
+// is why combos like Ctrl+Alt+2 or a bare PrintScreen could not be assigned at all.
+// Two tagged spaces extend the format so any key can be stored losslessly:
+//
+//   <no flag>     payload = Carbon kVK_* code (legacy + macOS recordings)
+//   kWinVkFlag    payload = Windows virtual-key code (VK_*), layout-independent
+//   kQtKeyFlag    payload = Qt::Key value (portable fallback, used on X11)
+//
+// Each backend decodes the tag at its edge; unmappable combinations fail cleanly
+// through registerHotkey()'s bool (TrayApp surfaces + rolls those back).
+namespace HotKeyCode {
+constexpr uint32_t kWinVkFlag   = 0x40000000u;
+constexpr uint32_t kQtKeyFlag   = 0x20000000u;
+constexpr uint32_t kPayloadMask = 0x01FFFFFFu;   // fits every Qt::Key value
+inline bool isWinVk(uint32_t code) { return (code & kWinVkFlag) != 0; }
+inline bool isQtKey(uint32_t code) { return (code & kQtKeyFlag) != 0; }
+inline uint32_t payload(uint32_t code) { return code & kPayloadMask; }
 }
 
 class Settings {

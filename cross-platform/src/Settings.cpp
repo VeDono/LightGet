@@ -91,16 +91,20 @@ QString Settings::hotKeyDisplayString(uint32_t carbonModifiers,
     return s;
 #else
     // Windows / Linux: spell out modifier names joined with "+", matching the
-    // combo that is ACTUALLY registered. The GlobalHotkey backends fold BOTH
-    // Carbon cmdKey and controlKey onto the platform Ctrl (MOD_CONTROL on
-    // Windows, ControlMask on X11), so both render as "Ctrl" here — that is why
-    // the persisted "⇧⌘2" default reads as "Ctrl+Shift+2" on these platforms.
-    // ("Win"/"Super" is reserved for a true Meta bit, which the recorder maps to
-    // controlKey and is therefore not emitted today; kept for completeness.)
+    // combo that is ACTUALLY registered (see the mapping table in Settings.h):
+    // cmdKey -> Ctrl (so the persisted "⇧⌘2" default reads "Ctrl+Shift+2"), and
+    // controlKey -> the Windows/Super key, which is now a registerable modifier
+    // instead of silently collapsing onto Ctrl.
     QStringList parts;
-    if (carbonModifiers & (cmdKey | controlKey)) parts << QStringLiteral("Ctrl");
-    if (carbonModifiers & optionKey)             parts << QStringLiteral("Alt");
-    if (carbonModifiers & shiftKey)              parts << QStringLiteral("Shift");
+    if (carbonModifiers & cmdKey)    parts << QStringLiteral("Ctrl");
+    if (carbonModifiers & controlKey)
+#if defined(Q_OS_WIN)
+        parts << QStringLiteral("Win");
+#else
+        parts << QStringLiteral("Super");
+#endif
+    if (carbonModifiers & optionKey) parts << QStringLiteral("Alt");
+    if (carbonModifiers & shiftKey)  parts << QStringLiteral("Shift");
     parts << key;
     return parts.join(QLatin1Char('+'));
 #endif

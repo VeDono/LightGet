@@ -265,6 +265,9 @@ signals:
 
 protected:
     void keyPressEvent(QKeyEvent*) override;
+    // Windows never sends WM_KEYDOWN for the PrintScreen key (only WM_KEYUP), so
+    // that key would be unrecordable through keyPressEvent alone.
+    void keyReleaseEvent(QKeyEvent*) override;
     // Cancel recording if focus leaves the field (click elsewhere / a rebuild):
     // otherwise it stayed armed showing "Press keys…" forever with no key able to
     // reach it.
@@ -272,14 +275,22 @@ protected:
 
 private:
     void startRecording();
+    // Shared capture path for keyPressEvent / keyReleaseEvent.
+    void handleKeyEvent(QKeyEvent* event);
     // Build a Carbon modifier mask from Qt::KeyboardModifiers.
     static uint32_t carbonModifiers(Qt::KeyboardModifiers mods);
     // Build the platform-correct display string (glyphs on macOS, spelled-out
     // "Ctrl+Shift+<KEY>" on Windows/Linux) via Settings::hotKeyDisplayString.
     static QString displayString(Qt::KeyboardModifiers mods, const QString& keyText);
-    // Translate a Qt::Key (+ native VK fallback) to a Carbon virtual-key code,
-    // so the persisted hotKeyCode matches the macOS defaults file (kVK_*).
-    static uint32_t carbonKeyCode(int qtKey, quint32 nativeVK);
+    // Encode the pressed key into the persisted hotKeyCode space (see Settings.h:
+    // Carbon code / kWinVkFlag native VK / kQtKeyFlag Qt::Key).
+    static uint32_t persistedKeyCode(int qtKey, quint32 nativeVK);
+    // Qt::Key -> Carbon kVK_* if one exists, else -1. (kVK_ANSI_A is 0, so 0 is a
+    // valid code and cannot double as "unmappable".)
+    static int carbonKeyCode(int qtKey);
+    // Keys allowed as a hotkey with NO modifier (they produce no text and are not
+    // navigation keys): PrintScreen, Pause, F-keys, media keys...
+    static bool isStandaloneKey(int qtKey);
 
     bool m_recording = false;
     QString m_idleStyle;       // theme-derived idle stylesheet

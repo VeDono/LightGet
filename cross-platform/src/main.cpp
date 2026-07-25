@@ -96,6 +96,11 @@ bool dumpOne(const QString& dir, const QString& theme, bool dark, int tabIndex) 
 
     SettingsWindow w;
     w.setPalette(QApplication::palette());   // ensure the window resolves the theme
+    // The real window clamps its height to the screen work area and scrolls the
+    // overflow (so it fits 768p laptops). For design comparison we want the whole
+    // page in one image, so grab it at the full design height instead of whatever
+    // the offscreen screen reports — otherwise the About footer is below the fold.
+    w.setFixedSize(500, 840);
     w.ensurePolished();
 
     // Switch the active tab via the real tab button (checkable, in the exclusive

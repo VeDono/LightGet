@@ -633,7 +633,7 @@ private:
 // Version + edition (set as compile definitions in CMakeLists.txt). Defaults
 // keep the file self-contained if a definition is ever missing.
 #ifndef LIGHTGET_VERSION
-#define LIGHTGET_VERSION "1.0.5"
+#define LIGHTGET_VERSION "1.0.6"
 #endif
 #ifndef LIGHTGET_EDITION
 #define LIGHTGET_EDITION "Cross-platform (Qt 6)"
@@ -1021,7 +1021,22 @@ void HotkeyRecorder::focusOutEvent(QFocusEvent* event) {
 
 void HotkeyRecorder::keyPressEvent(QKeyEvent* event) {
     if (!m_recording) { QPushButton::keyPressEvent(event); return; }
+    handleKeyEvent(event);
+}
 
+void HotkeyRecorder::keyReleaseEvent(QKeyEvent* event) {
+    // Windows delivers ONLY a key-release for PrintScreen (the OS does not send
+    // WM_KEYDOWN for VK_SNAPSHOT), so capture it here — otherwise the single most
+    // requested screenshot key could never be recorded. Everything else is handled
+    // on press.
+    if (m_recording && event->key() == Qt::Key_Print) {
+        handleKeyEvent(event);
+        return;
+    }
+    QPushButton::keyReleaseEvent(event);
+}
+
+void HotkeyRecorder::handleKeyEvent(QKeyEvent* event) {
     // Esc — cancel recording, restore previous display + idle style.
     if (event->key() == Qt::Key_Escape) {
         m_recording = false;
@@ -1040,10 +1055,13 @@ void HotkeyRecorder::keyPressEvent(QKeyEvent* event) {
 
     const Qt::KeyboardModifiers mods = event->modifiers();
     const uint32_t carbonMods = carbonModifiers(mods);
-    // Require at least one of Cmd/Ctrl/Alt — Shift ALONE is not enough. A
-    // Shift+<letter> global hotkey would swallow that capital letter in every
-    // app (typing "A" would fire the capture and eat the keystroke).
-    if ((carbonMods & ~CarbonKeys::shiftKey) == 0) {
+    // Normally require at least one of Cmd/Ctrl/Win/Alt — Shift ALONE is not
+    // enough, since a Shift+<letter> global hotkey would swallow that capital
+    // letter in every app. EXCEPTION: keys that never produce text and are not
+    // used for navigation (PrintScreen, Pause, F-keys, media keys...) are allowed
+    // bare, so "PrintScreen" alone can be the capture shortcut like in other
+    // screenshot tools.
+    if ((carbonMods & ~CarbonKeys::shiftKey) == 0 && !isStandaloneKey(k)) {
         QApplication::beep();
         return;                      // keep recording
     }
@@ -1055,11 +1073,21 @@ void HotkeyRecorder::keyPressEvent(QKeyEvent* event) {
     else
         keyText = QKeySequence(k).toString(QKeySequence::NativeText).toUpper();
 
-    const uint32_t carbonCode = carbonKeyCode(k, event->nativeVirtualKey());
-    if (carbonCode == 0) {   // key this platform's hotkey backend can't map
-        QApplication::beep();
-        return;              // keep recording; don't persist an unregisterable combo
+    // Every key is representable now (Carbon code / native VK / Qt::Key), so no
+    // key is rejected here — kVK_ANSI_A is legitimately 0. If a backend still
+    // cannot register the combo (e.g. a Windows-only key in a macOS settings
+    // file), TrayApp::applyHotkey surfaces that and rolls back to the previous one.
+    const uint32_t carbonCode = persistedKeyCode(k, event->nativeVirtualKey());
+#if defined(Q_OS_WIN)
+    // Name the key from the VK we actually register, not from event->text(): with
+    // AltGr (Ctrl+Alt) or a non-Latin layout the produced character has nothing to
+    // do with the physical key, so the label used to disagree with the shortcut.
+    {
+        extern QString WinNative_keyDisplayName(quint32 vk);   // src/win/WinNative.cpp
+        const QString native = WinNative_keyDisplayName(event->nativeVirtualKey());
+        if (!native.isEmpty()) keyText = native;
     }
+#endif
     const QString display = displayString(mods, keyText);
 
     m_recording = false;
@@ -1090,16 +1118,55 @@ QString HotkeyRecorder::displayString(Qt::KeyboardModifiers mods,
     return Settings::hotKeyDisplayString(carbonModifiers(mods), keyText);
 }
 
-// Translate a Qt key (+ native VK fallback) to a Carbon virtual-key code so the
-// persisted value matches the macOS app's defaults file (kVK_* constants).
-uint32_t HotkeyRecorder::carbonKeyCode(int qtKey, quint32 nativeVK) {
-#ifdef Q_OS_MAC
-    // On macOS, nativeVirtualKey() already IS the Carbon kVK_* code.
+bool HotkeyRecorder::isStandaloneKey(int qtKey) {
+    if (qtKey >= Qt::Key_F1 && qtKey <= Qt::Key_F35) return true;
+    switch (qtKey) {
+    case Qt::Key_Print:          // PrintScreen
+    case Qt::Key_Pause:
+    case Qt::Key_ScrollLock:
+    case Qt::Key_Insert:
+    case Qt::Key_Menu:
+    case Qt::Key_Help:
+    case Qt::Key_MediaPlay:
+    case Qt::Key_MediaStop:
+    case Qt::Key_MediaNext:
+    case Qt::Key_MediaPrevious:
+    case Qt::Key_VolumeUp:
+    case Qt::Key_VolumeDown:
+    case Qt::Key_VolumeMute:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Encode the pressed key for storage. Each platform picks the representation that
+// can express EVERY key it has (see the HotKeyCode notes in Settings.h).
+uint32_t HotkeyRecorder::persistedKeyCode(int qtKey, quint32 nativeVK) {
+#if defined(Q_OS_MAC)
+    // nativeVirtualKey() already IS the Carbon kVK_* code, and it covers every key
+    // on a Mac keyboard. kVK_ANSI_A is 0, so that one key needs an explicit case
+    // (0 would otherwise look like "no native code").
+    if (qtKey == Qt::Key_A) return 0u;
     if (nativeVK != 0) return nativeVK;
-#else
-    Q_UNUSED(nativeVK);
+#elif defined(Q_OS_WIN)
+    // Store the Windows virtual-key code: it identifies the PHYSICAL key, so a
+    // non-Latin layout, Shift+digit, or an AltGr (Ctrl+Alt) combo all record
+    // correctly, and keys Carbon cannot name (PrintScreen, Pause, numpad,
+    // F13-F24, OEM punctuation) become assignable.
+    if (nativeVK != 0) return HotKeyCode::kWinVkFlag | nativeVK;
 #endif
-    // Portable Qt::Key -> Carbon kVK_ANSI_* table (ANSI US layout positions).
+    // Portable path: prefer a Carbon code when one exists (keeps the persisted
+    // format identical to the native app's for the common keys), else store the
+    // Qt::Key itself so nothing is unrepresentable.
+    const int carbon = carbonKeyCode(qtKey);
+    if (carbon >= 0) return static_cast<uint32_t>(carbon);
+    return HotKeyCode::kQtKeyFlag | static_cast<uint32_t>(qtKey);
+}
+
+// Qt::Key -> Carbon kVK_ANSI_* (ANSI US layout positions); -1 when Carbon has no
+// code for the key.
+int HotkeyRecorder::carbonKeyCode(int qtKey) {
     switch (qtKey) {
     case Qt::Key_A: return 0x00; case Qt::Key_B: return 0x0B;
     case Qt::Key_C: return 0x08; case Qt::Key_D: return 0x02;
@@ -1140,14 +1207,28 @@ uint32_t HotkeyRecorder::carbonKeyCode(int qtKey, quint32 nativeVK) {
     case Qt::Key_F7: return 0x62; case Qt::Key_F8: return 0x64;
     case Qt::Key_F9: return 0x65; case Qt::Key_F10: return 0x6D;
     case Qt::Key_F11: return 0x67; case Qt::Key_F12: return 0x6F;
+    // Keys a Mac keyboard has that the old table omitted.
+    case Qt::Key_Delete:   return 0x75;   // forward delete
+    case Qt::Key_Home:     return 0x73;
+    case Qt::Key_End:      return 0x77;
+    case Qt::Key_PageUp:   return 0x74;
+    case Qt::Key_PageDown: return 0x79;
+    case Qt::Key_Left:     return 0x7B;
+    case Qt::Key_Right:    return 0x7C;
+    case Qt::Key_Down:     return 0x7D;
+    case Qt::Key_Up:       return 0x7E;
+    case Qt::Key_Help:     return 0x72;
+    case Qt::Key_F13: return 0x69; case Qt::Key_F14: return 0x6B;
+    case Qt::Key_F15: return 0x71; case Qt::Key_F16: return 0x6A;
+    case Qt::Key_F17: return 0x40; case Qt::Key_F18: return 0x4F;
+    case Qt::Key_F19: return 0x50; case Qt::Key_F20: return 0x5A;
     default: break;
     }
-    // Unknown key -> 0 (unmappable). On macOS a valid Carbon code was already
-    // returned above from nativeVK; off macOS the native VK is NOT a Carbon code,
-    // and persisting it as one silently mis-registered the hotkey (e.g. Windows
-    // VK_HOME 0x24 collides with Carbon kVK_Return, so Ctrl+Home registered
-    // Ctrl+Enter). Returning 0 makes the caller reject the key instead.
-    return 0;
+    // No Carbon equivalent (PrintScreen, Pause, ScrollLock, numpad, F21+...).
+    // persistedKeyCode() then falls back to the kQtKeyFlag space instead of
+    // mis-storing a native code as if it were Carbon (Windows VK_HOME 0x24 used to
+    // collide with Carbon kVK_Return, so Ctrl+Home registered Ctrl+Enter).
+    return -1;
 }
 
 // ===========================================================================
@@ -2113,8 +2194,9 @@ void SettingsWindow::addAboutSection(QVBoxLayout* generalCol) {
     }
     generalCol->addWidget(card);
 
-    // Copyright: "© Sergey Emelyanov YYYY · Made in Ukraine 🇺🇦", with the name a
-    // GitHub link (underlined, blue on hover).
+    // Copyright: "© Sergey Emelyanov YYYY · Made in Kharkiv 🇺🇦", with the name a
+    // GitHub link (underlined, blue on hover) and the flag drawn as a bundled
+    // image (the emoji has no glyph on Windows — it showed as the letters "UA").
     const int year = QDate::currentDate().year();
     auto* copyRow = new QWidget;
     auto* ch = new QHBoxLayout(copyRow);
@@ -2134,13 +2216,33 @@ void SettingsWindow::addAboutSection(QVBoxLayout* generalCol) {
     auto* nameLink = new InlineLinkLabel(QStringLiteral("Sergey Emelyanov"),
                                          QStringLiteral("https://github.com/VeDono"),
                                          fs, m_tk.text3, m_tk.link);
-    auto* post = grayText(QStringLiteral(" %1 · %2")
-                              .arg(year).arg(Loc::t("settings.madeInUkraine")), fs);
+    auto* post = grayText(QStringLiteral(" %1 · %2 ")
+                              .arg(year).arg(Loc::t("settings.madeInKharkiv")), fs);
+
+    // Flag as an image at the size the emoji used to occupy (~1.2x the font size,
+    // which is how an emoji glyph renders in a 12px label). Loaded from the
+    // bundled 72x72 PNG and scaled for the current DPR so it stays crisp on
+    // Retina / Windows scaling instead of showing the letters "UA".
+    auto* flag = new QLabel;
+    {
+        const int side = static_cast<int>(std::lround(fs * 1.2));   // ~14px
+        const qreal dpr = devicePixelRatioF();
+        QPixmap px(QStringLiteral(":/assets/flag_ua.png"));
+        if (!px.isNull()) {
+            const int px_side = static_cast<int>(std::lround(side * dpr));
+            px = px.scaled(px_side, px_side, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            px.setDevicePixelRatio(dpr);
+            flag->setPixmap(px);
+        }
+        flag->setFixedSize(side, side);
+        flag->setScaledContents(true);
+    }
 
     ch->addStretch(1);
     ch->addWidget(pre);
     ch->addWidget(nameLink);
     ch->addWidget(post);
+    ch->addWidget(flag, 0, Qt::AlignVCenter);
     ch->addStretch(1);
     generalCol->addWidget(copyRow);
 

@@ -34,6 +34,7 @@
 #include <QGuiApplication>
 #include <QCursor>
 #include <QPixmap>
+#include <QScreen>
 
 #if defined(Q_OS_MACOS)
 #include <ApplicationServices/ApplicationServices.h>  // CGPreflight/RequestScreenCaptureAccess
@@ -51,6 +52,11 @@ extern void MacNative_requestScreenCapturePermission();
 // (WaylandPortal.cpp, Linux+QtDBus only), since grabWindow(0) returns null there.
 #if defined(Q_OS_LINUX) && defined(HAVE_QTDBUS)
 extern QImage LightGet_captureDesktopViaPortal();
+#endif
+
+// Windows: exact per-monitor DIB capture (src/win/WinNative.cpp).
+#if defined(Q_OS_WIN)
+extern QImage WinNative_captureScreen(QScreen* screen);
 #endif
 
 namespace ScreenCapture {
@@ -155,6 +161,20 @@ void requestPermission() {
 static QImage grabScreenPixels(QScreen* screen) {
     if (!screen)
         return QImage();
+
+#if defined(Q_OS_WIN)
+    // Native path first: Qt's grabWindow(0) round-trips through a display-format
+    // CreateCompatibleBitmap + GetDIBits and derives its source rect from
+    // DPI-scaled geometry, which corrupted a vertical band along the RIGHT edge of
+    // the capture. WinNative_captureScreen reads the monitor's exact physical rect
+    // into a 32-bpp top-down DIB (stride == width*4), so there is no format or
+    // padding ambiguity. Falls through to the baseline below if it fails.
+    {
+        QImage native = WinNative_captureScreen(screen);
+        if (!native.isNull())
+            return native;
+    }
+#endif
 
     // grabWindow(0) on a QScreen captures that screen's full desktop. The
     // returned QPixmap is at native pixel resolution; dpr is baked into size.
