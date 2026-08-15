@@ -14,6 +14,7 @@
 #include "Localization.h"
 #include "OverlayWindow.h"
 #include "ScreenCapture.h"
+#include "Updater.h"
 #include "Settings.h"
 #include "SettingsWindow.h"
 
@@ -246,10 +247,20 @@ void TrayApp::start() {
         if (!QSystemTrayIcon::isSystemTrayAvailable()) openSettings();
     });
 
+    // Automatic update check shortly after launch (opt-out in Settings). Delayed
+    // so it never competes with startup work, and silent unless there IS an update.
+    if (Settings::instance().updateCheckOnLaunch())
+        QTimer::singleShot(8000, this, [this]() { checkForUpdates(true); });
+
     m_hotKey = new GlobalHotkey(this);
     connect(m_hotKey, &GlobalHotkey::activated, this, &TrayApp::onHotkeyActivated);
     applyHotkey(Settings::instance().hotKeyCode(),
                 Settings::instance().hotKeyModifiers(), /*userInitiated*/ false);
+}
+
+void TrayApp::checkForUpdates(bool silent) {
+    if (!m_updater) m_updater = new Updater(this);
+    m_updater->check(silent, m_settings);
 }
 
 void TrayApp::refreshCaptureShortcutLabel() {
@@ -421,6 +432,13 @@ QMenu* TrayApp::buildMenu() {
     connect(settings, &QAction::triggered, this, &TrayApp::openSettings);
     m_settingsAction = settings;
 
+    // Check for updates — same styled row set; the app is installed once and
+    // updates itself from GitHub Releases instead of being re-downloaded by hand.
+    QAction* update = menu->addAction(Loc::t(QStringLiteral("menu.checkUpdates")));
+    update->setIconVisibleInMenu(true);
+    connect(update, &QAction::triggered, this, [this]() { checkForUpdates(false); });
+    m_updateAction = update;
+
     menu->addSeparator();
 
     // Quit — standard ⌘Q (QKeySequence::Quit), right-aligned like the design and
@@ -449,6 +467,7 @@ void TrayApp::applyMenuTheme() {
     const QColor iconColor = dark ? QColor("#c7c7cc") : QColor("#4a4a4f");
     if (m_captureAction)  m_captureAction->setIcon(makeMenuGlyph(MenuGlyph::Capture, iconColor));
     if (m_settingsAction) m_settingsAction->setIcon(makeMenuGlyph(MenuGlyph::Settings, iconColor));
+    if (m_updateAction)   m_updateAction->setIcon(makeMenuGlyph(MenuGlyph::Capture, iconColor));
     if (m_quitAction)     m_quitAction->setIcon(makeMenuGlyph(MenuGlyph::Power, iconColor));
 }
 

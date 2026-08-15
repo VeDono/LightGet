@@ -12,6 +12,7 @@
 
 namespace {
 // Persisted key names — must match the macOS app verbatim for migration parity.
+constexpr char kUpdateCheck[]   = "updateCheckOnLaunch";
 constexpr char kKeyCode[]       = "hotKeyCode";
 constexpr char kModifiers[]     = "hotKeyModifiers";
 constexpr char kDisplay[]       = "hotKeyDisplay";
@@ -108,6 +109,14 @@ QString Settings::hotKeyDisplayString(uint32_t carbonModifiers,
     parts << key;
     return parts.join(QLatin1Char('+'));
 #endif
+}
+
+bool Settings::updateCheckOnLaunch() const {
+    return m_s.value(kUpdateCheck, true).toBool();
+}
+
+void Settings::setUpdateCheckOnLaunch(bool v) {
+    m_s.setValue(kUpdateCheck, v);
 }
 
 // --- Capture / output ---

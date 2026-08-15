@@ -273,8 +273,15 @@ protected:
     // reach it.
     void focusOutEvent(QFocusEvent*) override;
 
+public:
+    // Windows only: a key seen by the low-level keyboard hook while recording
+    // (vk = virtual-key, mods = 1:Ctrl 2:Alt 4:Shift 8:Win). Public so the hook's
+    // C trampoline can route into the armed recorder.
+    void applyNativeCapture(quint32 vk, quint32 mods);
+
 private:
     void startRecording();
+    void cancelRecording();
     // Shared capture path for keyPressEvent / keyReleaseEvent.
     void handleKeyEvent(QKeyEvent* event);
     // Build a Carbon modifier mask from Qt::KeyboardModifiers.

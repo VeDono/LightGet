@@ -239,10 +239,33 @@ int nextWinHotkeyId() {
 
 } // namespace
 
+// Low-level-hook fallback (src/win/WinNative.cpp) for combos RegisterHotKey
+// refuses because another process owns them.
+extern bool WinNative_installHotkeyHook(quint32 vk, quint32 mods, void (*cb)());
+extern void WinNative_removeHotkeyHook();
+
 struct GlobalHotkey::Impl {
-    int id = 0;       // RegisterHotKey id (== WM_HOTKEY wParam)
+    int id = 0;         // RegisterHotKey id (== WM_HOTKEY wParam)
     bool active = false;
+    bool usingHook = false;   // registered via the keyboard hook instead
 };
+
+// The app owns exactly one GlobalHotkey; the hook is process-wide, so route its
+// callback through a file-static owner.
+namespace {
+GlobalHotkey* g_hookOwner = nullptr;
+void hotkeyHookFired() { if (g_hookOwner) g_hookOwner->emitActivated(); }
+
+// Carbon modifier mask -> the hook's 1=Ctrl 2=Alt 4=Shift 8=Win bitmask.
+quint32 carbonModsToHookMask(uint32_t mods) {
+    quint32 m = 0;
+    if (mods & kCmd)  m |= 0x1;
+    if (mods & kOpt)  m |= 0x2;
+    if (mods & kShft) m |= 0x4;
+    if (mods & kCtrl) m |= 0x8;
+    return m;
+}
+} // namespace
 
 GlobalHotkey::GlobalHotkey(QObject* parent) : QObject(parent) {
     d = new Impl();
@@ -268,6 +291,18 @@ bool GlobalHotkey::registerHotkey(uint32_t carbonKeyCode, uint32_t carbonModifie
     winRegistry().insert(d->id, this);
     if (!::RegisterHotKey(hwnd, d->id, mods, vk)) {
         winRegistry().remove(d->id);
+        // The combo is owned by another process — most commonly PrintScreen, which
+        // Windows 11 binds to the Snipping Tool by default. Fall back to a
+        // low-level keyboard hook, which sees the key first and swallows it, so the
+        // shortcut the user picked actually works instead of silently doing nothing.
+        g_hookOwner = this;
+        if (WinNative_installHotkeyHook(vk, carbonModsToHookMask(carbonModifiers),
+                                        &hotkeyHookFired)) {
+            d->usingHook = true;
+            m_registered = true;
+            return true;
+        }
+        g_hookOwner = nullptr;
         m_registered = false;
         return false;
     }
@@ -284,6 +319,11 @@ void GlobalHotkey::unregisterHotkey() {
     if (d && d->active) {
         ::UnregisterHotKey(hotkeyMessageWindow(), d->id);
         d->active = false;
+    }
+    if (d && d->usingHook) {
+        WinNative_removeHotkeyHook();
+        d->usingHook = false;
+        if (g_hookOwner == this) g_hookOwner = nullptr;
     }
     if (d) winRegistry().remove(d->id);
     m_registered = false;

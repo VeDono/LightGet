@@ -12,10 +12,17 @@
 #include "Settings.h"
 #include "TrayApp.h"
 #include "SettingsWindow.h"
+#include "Updater.h"
 #include "Toolbar.h"
 #include "Localization.h"
 
 #include <QApplication>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QNetworkAccessManager>
+#include <QJsonObject>
+#include <QJsonDocument>
+#include <QEventLoop>
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QIcon>
@@ -250,6 +257,30 @@ int main(int argc, char** argv) {
             const int code = runRenderDump(args.at(idx + 1));
             return code;   // never reach TrayApp / app.exec()
         }
+    }
+
+    // Hidden diagnostic: "--update-check" asks GitHub for the latest release,
+    // prints it next to this build's version, and exits. Verifies the update path
+    // (network + tag parsing + comparison) without driving the tray UI.
+    if (QCoreApplication::arguments().contains(QStringLiteral("--update-check"))) {
+        QNetworkAccessManager net;
+        QNetworkRequest req(QUrl(QStringLiteral(
+            "https://api.github.com/repos/VeDono/LightGet/releases/latest")));
+        req.setRawHeader("Accept", "application/vnd.github+json");
+        req.setRawHeader("User-Agent", "LightGet");
+        QNetworkReply* reply = net.get(req);
+        QEventLoop loop;
+        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        loop.exec();
+        const QString tag = QJsonDocument::fromJson(reply->readAll())
+                                .object().value(QStringLiteral("tag_name")).toString();
+        const QString cur = Updater::currentVersion();
+        const QString err = (reply->error() == QNetworkReply::NoError)
+                                ? QStringLiteral("none") : reply->errorString();
+        fprintf(stdout, "installed=%s latest=%s newer=%s error=%s\n",
+                qPrintable(cur), qPrintable(tag.isEmpty() ? QStringLiteral("?") : tag),
+                Updater::isNewerVersion(tag, cur) ? "yes" : "no", qPrintable(err));
+        return 0;
     }
 
     TrayApp tray;

@@ -41,7 +41,7 @@ if(APPLE)
     endif()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Gui Core)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Gui Core Network)
 
 # ---------------------------------------------------------------------------
 # Sources (every file we intend to exist; some .cpp not yet written)
@@ -56,6 +56,7 @@ set(LIGHTGET_HEADERS
     src/Toolbar.h
     src/SettingsWindow.h
     src/TrayApp.h
+    src/Updater.h
 )
 
 set(LIGHTGET_SOURCES
@@ -68,6 +69,7 @@ set(LIGHTGET_SOURCES
     src/Toolbar.cpp
     src/SettingsWindow.cpp
     src/TrayApp.cpp
+    src/Updater.cpp      # GitHub-Releases update check + self-install
 )
 
 # Optional bundled icon/glyph assets (SF Symbol replacements). Create as needed.
@@ -87,6 +89,7 @@ target_link_libraries(LightGet PRIVATE
     Qt6::Widgets
     Qt6::Gui
     Qt6::Core
+    Qt6::Network   # Updater: GitHub Releases API + asset download
 )
 
 # In-app settings scope = APP_NAME (so an alternate build keeps its own QSettings).
@@ -104,7 +107,7 @@ target_compile_definitions(LightGet PRIVATE _USE_MATH_DEFINES)
 # "function-style macro" heuristic and get DROPPED if written inline. Routing the
 # value through a set() variable first makes CMake quote it correctly so the full
 # "Cross-platform (Qt 6)" reaches the compiler (verified in the generated build).
-set(LIGHTGET_VERSION "1.0.6" CACHE STRING "Product version string")
+set(LIGHTGET_VERSION "1.0.7" CACHE STRING "Product version string")
 set(LIGHTGET_EDITION "Cross-platform (Qt 6)" CACHE STRING "Build edition label")
 target_compile_definitions(LightGet PRIVATE
     LIGHTGET_VERSION="${LIGHTGET_VERSION}"
@@ -163,8 +166,8 @@ elseif(APPLE)
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_BUNDLE_NAME "${APP_NAME}"
         MACOSX_BUNDLE_GUI_IDENTIFIER "${BUNDLE_ID}"
-        MACOSX_BUNDLE_BUNDLE_VERSION "7"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.6"
+        MACOSX_BUNDLE_BUNDLE_VERSION "8"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.7"
         MACOSX_BUNDLE_ICON_FILE "AppIcon"
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/Info.plist.in"
     )

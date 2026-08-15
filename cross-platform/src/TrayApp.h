@@ -35,6 +35,7 @@ class QAction;
 class GlobalHotkey;
 class OverlayWindow;
 class SettingsWindow;
+class Updater;
 
 class TrayApp : public QObject {
     Q_OBJECT
@@ -49,6 +50,9 @@ public:
 public slots:
     void startCapture();        // hotkey / menu "Capture" trigger
     void openSettings();
+    // Ask GitHub for a newer release. Silent = only speak up if one exists
+    // (used for the automatic check shortly after launch).
+    void checkForUpdates(bool silent);
 
 private slots:
     void onHotkeyActivated();   // GlobalHotkey::activated -> startCapture
@@ -86,6 +90,8 @@ private:
     QAction* m_captureAction = nullptr;     // title updated live to show hotkey
     QAction* m_settingsAction = nullptr;    // re-tinted by applyMenuTheme()
     QAction* m_quitAction = nullptr;        // re-tinted by applyMenuTheme()
+    QAction* m_updateAction = nullptr;      // "Check for Updates…"
+    Updater* m_updater = nullptr;           // lazily created
 
     GlobalHotkey* m_hotKey = nullptr;
     // Last combo that registered successfully — used to roll back a failed

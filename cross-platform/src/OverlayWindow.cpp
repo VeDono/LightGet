@@ -2104,31 +2104,49 @@ QImage OverlayWindow::renderOutput() const {
     if (!m_selection || m_selection->width() <= 1 || m_selection->height() <= 1)
         return QImage();
     const QRectF sel = *m_selection;
-    const qreal outScale = outputScale();
-    const int pxW = static_cast<int>(sel.width() * outScale);
-    const int pxH = static_cast<int>(sel.height() * outScale);
-    if (pxW <= 0 || pxH <= 0) return QImage();
+    const qreal s = scale();               // screenshot pixels per logical point
+    if (s <= 0.0 || m_screenshot.isNull()) return QImage();
 
-    QImage out(pxW, pxH, QImage::Format_RGBA8888_Premultiplied);
-    out.fill(Qt::transparent);
+    // CROP EXACT PIXELS out of the screenshot.
+    //
+    // This used to allocate a TRANSPARENT canvas and re-draw the whole screenshot
+    // into it through a fractional transform. Two artifacts came out of that: the
+    // base image was needlessly resampled (soft everywhere), and — visibly — when
+    // the selection touched a screen edge the image boundary landed exactly on the
+    // output's edge column, which then ended up only partially covered and blended
+    // with the transparent fill: a 1px band down the full height of the left or
+    // right edge. Copying the pixel rect gives a byte-for-byte crop, so neither can
+    // happen. The rect is snapped to whole pixels and clamped to the image, so we
+    // never sample outside it.
+    QRect src = QRectF(sel.left() * s, sel.top() * s,
+                       sel.width() * s, sel.height() * s).toRect()
+                    .intersected(m_screenshot.rect());
+    if (src.width() <= 0 || src.height() <= 0) return QImage();
 
-    QPainter p(&out);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setRenderHint(QPainter::TextAntialiasing, true);
-    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    QImage out = m_screenshot.copy(src);
+    out.setDevicePixelRatio(1.0);          // raw pixels from here on
 
-    // Map view-point coords (top-left, +Y down) into the crop. NO Y-flip: scale
-    // by outScale, then translate so the selection's top-left is the origin.
-    p.scale(outScale, outScale);
-    p.translate(-sel.left(), -sel.top());
+    // Annotations are stored in logical points: map them onto the crop.
+    if (!m_annotations.isEmpty()) {
+        QPainter p(&out);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setRenderHint(QPainter::TextAntialiasing, true);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        p.scale(s, s);                              // logical points -> image px
+        p.translate(-src.left() / s, -src.top() / s);
+        for (const Annotation& a : m_annotations)
+            const_cast<OverlayWindow*>(this)->drawAnnotation(p, a);
+        p.end();
+    }
 
-    // drawImageUpright would use rect()=view bounds; mirror that mapping by
-    // drawing the full screenshot into the view bounds rect.
-    const_cast<OverlayWindow*>(this)->drawImageUpright(p, m_screenshot, QRectF(rect()));
-    for (const Annotation& a : m_annotations)
-        const_cast<OverlayWindow*>(this)->drawAnnotation(p, a);
-
-    p.end();
+    // "Downscale to standard size": deliver at 1x. Rendering at full resolution
+    // first and scaling once at the end also keeps annotation edges cleaner than
+    // drawing them straight into a 1x canvas.
+    if (Settings::instance().downscaleRetina() && s > 1.0) {
+        const QSize target(std::max(1, qRound(src.width() / s)),
+                           std::max(1, qRound(src.height() / s)));
+        out = out.scaled(target, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    }
     return out;
 }
 
