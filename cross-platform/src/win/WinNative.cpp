@@ -32,6 +32,11 @@
 
 #include <windows.h>
 
+// Forward declarations: the install helpers below call their own teardown
+// counterparts before those are defined.
+void WinNative_endKeyCapture();
+void WinNative_removeHotkeyHook();
+
 namespace {
 
 struct MonitorEntry {
