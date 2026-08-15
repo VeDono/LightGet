@@ -49,6 +49,7 @@
 #include <QDir>
 #include <QIcon>
 #include <QPixmap>
+#include <QPointer>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
@@ -633,7 +634,7 @@ private:
 // Version + edition (set as compile definitions in CMakeLists.txt). Defaults
 // keep the file self-contained if a definition is ever missing.
 #ifndef LIGHTGET_VERSION
-#define LIGHTGET_VERSION "1.0.6"
+#define LIGHTGET_VERSION "1.0.7"
 #endif
 #ifndef LIGHTGET_EDITION
 #define LIGHTGET_EDITION "Cross-platform (Qt 6)"
@@ -1003,19 +1004,87 @@ void HotkeyRecorder::applyTokens(const DesignTokens& tk) {
     setStyleSheet(m_recording ? m_recordingStyle : m_idleStyle);
 }
 
+#if defined(Q_OS_WIN)
+// Trampoline from the low-level keyboard hook to the armed recorder. The hook
+// fires on the GUI thread, but the callback is queued anyway so no UI work
+// happens inside the hook procedure.
+extern bool WinNative_beginKeyCapture(void (*cb)(quint32 vk, quint32 mods));
+extern void WinNative_endKeyCapture();
+namespace {
+QPointer<HotkeyRecorder> g_armedRecorder;
+void recorderHookTrampoline(quint32 vk, quint32 mods) {
+    if (!g_armedRecorder) return;
+    QMetaObject::invokeMethod(g_armedRecorder, [r = g_armedRecorder, vk, mods]() {
+        if (r) r->applyNativeCapture(vk, mods);
+    }, Qt::QueuedConnection);
+}
+} // namespace
+#endif
+
 void HotkeyRecorder::startRecording() {
     m_recording = true;
     setStyleSheet(m_recordingStyle);
     setText(Loc::t("recorder.press"));
     setFocus(Qt::OtherFocusReason);
+#if defined(Q_OS_WIN)
+    // Qt key events are not enough here: Windows sends no key-down for
+    // PrintScreen, and when another app owns a combo (Win 11 gives PrintScreen to
+    // the Snipping Tool) the key never reaches us at all. The hook sees every key.
+    g_armedRecorder = this;
+    WinNative_beginKeyCapture(&recorderHookTrampoline);
+#endif
+}
+
+void HotkeyRecorder::cancelRecording() {
+    m_recording = false;
+#if defined(Q_OS_WIN)
+    WinNative_endKeyCapture();
+    g_armedRecorder = nullptr;
+#endif
+    setStyleSheet(m_idleStyle);
+    setText(Settings::instance().hotKeyDisplay());
+}
+
+void HotkeyRecorder::applyNativeCapture(quint32 vk, quint32 mods) {
+#if defined(Q_OS_WIN)
+    if (!m_recording) return;
+    if (vk == 0x1B) { cancelRecording(); return; }          // VK_ESCAPE
+    if (vk == 0) return;
+
+    uint32_t carbonMods = 0;
+    if (mods & 0x1) carbonMods |= CarbonKeys::cmdKey;       // Ctrl
+    if (mods & 0x2) carbonMods |= CarbonKeys::optionKey;    // Alt
+    if (mods & 0x4) carbonMods |= CarbonKeys::shiftKey;     // Shift
+    if (mods & 0x8) carbonMods |= CarbonKeys::controlKey;   // Win
+
+    // Same rule as the Qt path: a bare key is only allowed when it produces no
+    // text and is not a navigation key (VK_SNAPSHOT / PAUSE / SCROLL / INSERT /
+    // APPS / F1-F24 / media keys).
+    const bool standalone =
+        vk == 0x2C || vk == 0x13 || vk == 0x91 || vk == 0x2D || vk == 0x5D ||
+        (vk >= 0x70 && vk <= 0x87) || (vk >= 0xA6 && vk <= 0xB3);
+    if ((carbonMods & ~CarbonKeys::shiftKey) == 0 && !standalone) {
+        QApplication::beep();
+        return;   // keep recording
+    }
+
+    extern QString WinNative_keyDisplayName(quint32 vk);
+    const QString display =
+        Settings::hotKeyDisplayString(carbonMods, WinNative_keyDisplayName(vk));
+
+    m_recording = false;
+    WinNative_endKeyCapture();
+    g_armedRecorder = nullptr;
+    setStyleSheet(m_idleStyle);
+    setText(display);
+    emit captured(HotKeyCode::kWinVkFlag | vk, carbonMods, display);
+#else
+    Q_UNUSED(vk); Q_UNUSED(mods);
+#endif
 }
 
 void HotkeyRecorder::focusOutEvent(QFocusEvent* event) {
-    if (m_recording) {   // clicked away / rebuilt while armed: cancel cleanly
-        m_recording = false;
-        setStyleSheet(m_idleStyle);
-        setText(Settings::instance().hotKeyDisplay());
-    }
+    if (m_recording) cancelRecording();   // clicked away / rebuilt while armed
     QPushButton::focusOutEvent(event);
 }
 
@@ -1039,9 +1108,7 @@ void HotkeyRecorder::keyReleaseEvent(QKeyEvent* event) {
 void HotkeyRecorder::handleKeyEvent(QKeyEvent* event) {
     // Esc — cancel recording, restore previous display + idle style.
     if (event->key() == Qt::Key_Escape) {
-        m_recording = false;
-        setStyleSheet(m_idleStyle);
-        setText(Settings::instance().hotKeyDisplay());
+        cancelRecording();
         return;
     }
 
@@ -1091,6 +1158,10 @@ void HotkeyRecorder::handleKeyEvent(QKeyEvent* event) {
     const QString display = displayString(mods, keyText);
 
     m_recording = false;
+#if defined(Q_OS_WIN)
+    WinNative_endKeyCapture();
+    g_armedRecorder = nullptr;
+#endif
     setStyleSheet(m_idleStyle);
     setText(display);
     emit captured(carbonCode, carbonMods, display);
@@ -1914,6 +1985,16 @@ QWidget* SettingsWindow::buildGeneralTab() {
         tog->setChecked(isLaunchAtLoginEnabled());
         connect(tog, &QAbstractButton::toggled, this, &SettingsWindow::onLaunchAtLoginToggled);
         addRowWidget(makeToggleRow(Loc::t("settings.launchAtLogin"), tog, nullptr));
+    }
+
+    // --- Check for updates on launch (toggle, no reset) ---
+    {
+        auto* tog = new ToggleSwitch(m_tk);
+        tog->setChecked(s.updateCheckOnLaunch());
+        connect(tog, &QAbstractButton::toggled, this, [](bool on) {
+            Settings::instance().setUpdateCheckOnLaunch(on);
+        });
+        addRowWidget(makeToggleRow(Loc::t("settings.autoUpdate"), tog, nullptr));
     }
 
     outer->addWidget(card);

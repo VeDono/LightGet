@@ -48,6 +48,73 @@ BOOL CALLBACK collectMonitor(HMONITOR mon, HDC, LPRECT, LPARAM userData) {
     return TRUE;
 }
 
+// Modifier bitmask shared with the Qt side: 1=Ctrl 2=Alt 4=Shift 8=Win.
+quint32 currentModMask() {
+    quint32 m = 0;
+    if (GetAsyncKeyState(VK_CONTROL) & 0x8000) m |= 0x1;
+    if (GetAsyncKeyState(VK_MENU)    & 0x8000) m |= 0x2;
+    if (GetAsyncKeyState(VK_SHIFT)   & 0x8000) m |= 0x4;
+    if ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000))
+        m |= 0x8;
+    return m;
+}
+
+bool isModifierVk(DWORD vk) {
+    switch (vk) {
+    case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL:
+    case VK_MENU:    case VK_LMENU:    case VK_RMENU:
+    case VK_SHIFT:   case VK_LSHIFT:   case VK_RSHIFT:
+    case VK_LWIN:    case VK_RWIN:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// --- recorder capture hook -------------------------------------------------
+HHOOK g_captureHook = nullptr;
+void (*g_captureCb)(quint32, quint32) = nullptr;
+
+LRESULT CALLBACK captureProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HC_ACTION && g_captureCb) {
+        const auto* kb = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+        const bool down = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+        // PrintScreen is the reason this hook exists: Windows does not deliver a
+        // normal key-down for it, so accept it on whichever edge shows up.
+        const bool printEdge = (kb->vkCode == VK_SNAPSHOT && wParam == WM_KEYUP);
+        if ((down || printEdge) && !isModifierVk(kb->vkCode)) {
+            g_captureCb(quint32(kb->vkCode), currentModMask());
+            return 1;   // swallow while recording so the key can't leak elsewhere
+        }
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+// --- global-hotkey fallback hook -------------------------------------------
+HHOOK g_hotkeyHook = nullptr;
+void (*g_hotkeyCb)() = nullptr;
+quint32 g_hotkeyVk = 0;
+quint32 g_hotkeyMods = 0;
+DWORD   g_lastFire = 0;
+
+LRESULT CALLBACK hotkeyProc(int code, WPARAM wParam, LPARAM lParam) {
+    if (code == HC_ACTION && g_hotkeyCb && g_hotkeyVk != 0) {
+        const auto* kb = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+        const bool down = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+        const bool printEdge = (kb->vkCode == VK_SNAPSHOT && wParam == WM_KEYUP);
+        if ((down || printEdge) && quint32(kb->vkCode) == g_hotkeyVk
+            && currentModMask() == g_hotkeyMods) {
+            const DWORD now = GetTickCount();
+            if (now - g_lastFire > 300) {   // debounce auto-repeat / both edges
+                g_lastFire = now;
+                g_hotkeyCb();
+            }
+            return 1;   // swallow, so e.g. the Snipping Tool does not also open
+        }
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
 // Keys whose scan code needs the "extended" lParam bit for GetKeyNameText.
 bool isExtendedKey(UINT vk) {
     switch (vk) {
@@ -63,6 +130,59 @@ bool isExtendedKey(UINT vk) {
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Hotkey RECORDING via a low-level keyboard hook.
+//
+// Qt key events are not enough on Windows: the OS never sends a normal key-down
+// for PrintScreen, and — worse — Windows 11 binds PrintScreen to the Snipping
+// Tool by default, so the key never reaches the app at all. A WH_KEYBOARD_LL
+// hook sees every key before that dispatch, which is how other screenshot tools
+// let you assign PrintScreen (and Win / AltGr combos) at all.
+//
+// The callback runs on the GUI thread (hooks fire during message dispatch).
+// ---------------------------------------------------------------------------
+bool WinNative_beginKeyCapture(void (*cb)(quint32 vk, quint32 mods)) {
+    WinNative_endKeyCapture();
+    if (!cb) return false;
+    g_captureCb = cb;
+    g_captureHook = SetWindowsHookExW(WH_KEYBOARD_LL, captureProc,
+                                      GetModuleHandleW(nullptr), 0);
+    if (!g_captureHook) { g_captureCb = nullptr; return false; }
+    return true;
+}
+
+void WinNative_endKeyCapture() {
+    if (g_captureHook) { UnhookWindowsHookEx(g_captureHook); g_captureHook = nullptr; }
+    g_captureCb = nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Global-hotkey FALLBACK via the same mechanism, for when RegisterHotKey is
+// refused because another process already owns the combo (again: PrintScreen,
+// which Windows 11 hands to the Snipping Tool out of the box). Swallowing the key
+// here also stops that other handler from firing alongside us.
+// `mods` uses the 1=Ctrl 2=Alt 4=Shift 8=Win bitmask.
+// ---------------------------------------------------------------------------
+bool WinNative_installHotkeyHook(quint32 vk, quint32 mods, void (*cb)()) {
+    WinNative_removeHotkeyHook();
+    if (vk == 0 || !cb) return false;
+    g_hotkeyVk = vk;
+    g_hotkeyMods = mods;
+    g_hotkeyCb = cb;
+    g_lastFire = 0;
+    g_hotkeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, hotkeyProc,
+                                     GetModuleHandleW(nullptr), 0);
+    if (!g_hotkeyHook) { g_hotkeyCb = nullptr; g_hotkeyVk = 0; return false; }
+    return true;
+}
+
+void WinNative_removeHotkeyHook() {
+    if (g_hotkeyHook) { UnhookWindowsHookEx(g_hotkeyHook); g_hotkeyHook = nullptr; }
+    g_hotkeyCb = nullptr;
+    g_hotkeyVk = 0;
+    g_hotkeyMods = 0;
+}
 
 // ---------------------------------------------------------------------------
 // Capture the given screen at its exact physical resolution. Returns a null
