@@ -94,6 +94,10 @@ public:
     void setDownscaleRetina(bool v);
     bool animatedDim() const;                // default false (instant dim/teardown)
     void setAnimatedDim(bool v);
+    // Ask GitHub for a newer release when the app starts (default true). A single
+    // unauthenticated request to the public releases API; no telemetry.
+    bool updateCheckOnLaunch() const;
+    void setUpdateCheckOnLaunch(bool v);
 
     // --- General ---
     QString language() const;                // default "en"; one of en/ru/uk
