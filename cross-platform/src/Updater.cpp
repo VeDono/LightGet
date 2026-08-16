@@ -60,6 +60,18 @@ QString wantedAssetPattern() {
 #endif
 }
 
+// Exact asset file names the release workflow publishes — used when the API is
+// unavailable and the download URL has to be derived from the tag.
+QString conventionalAssetName() {
+#if defined(Q_OS_WIN)
+    return QStringLiteral("LightGet-Setup-Windows-x64.exe");
+#elif defined(Q_OS_MACOS)
+    return QStringLiteral("LightGet-macOS.zip");
+#else
+    return QStringLiteral("LightGet-x86_64.AppImage");
+#endif
+}
+
 QList<int> versionParts(QString v) {
     v = v.trimmed();
     if (v.startsWith(QLatin1Char('v'), Qt::CaseInsensitive)) v.remove(0, 1);
@@ -248,7 +260,12 @@ bool Updater::isNewerVersion(const QString& remote, const QString& local) {
 void Updater::check(bool silent, QWidget* dialogParent) {
     if (m_busy) return;
     m_busy = true;
+    m_silent = silent;
+    m_parent = dialogParent;
+    requestLatestViaApi();
+}
 
+void Updater::requestLatestViaApi() {
     QNetworkRequest req((QUrl(QString::fromLatin1(kLatestReleaseApi))));
     req.setRawHeader("Accept", "application/vnd.github+json");
     // GitHub rejects API requests without a User-Agent.
@@ -256,65 +273,107 @@ void Updater::check(bool silent, QWidget* dialogParent) {
                      QStringLiteral("LightGet/%1").arg(currentVersion()).toUtf8());
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                      QNetworkRequest::NoLessSafeRedirectPolicy);
+    // Without a timeout a stalled request never finishes, and m_busy would stay
+    // set forever — every later "Check for Updates…" would then do nothing at all.
+    req.setTransferTimeout(15000);
 
     QNetworkReply* reply = m_net->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, silent, dialogParent]() {
-        onReplyFinished(reply, silent, dialogParent);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QJsonObject root = QJsonDocument::fromJson(reply->readAll()).object();
+        const QString tag = root.value(QStringLiteral("tag_name")).toString();
+
+        if (reply->error() != QNetworkReply::NoError || tag.isEmpty()) {
+            // Most likely the unauthenticated API quota (60/hour PER IP, shared by
+            // everything on this machine) — status 403/429. Fall back to the plain
+            // web redirect, which has no such limit.
+            Q_UNUSED(status);
+            requestLatestViaRedirect();
+            return;
+        }
+
+        QString assetUrl, assetName;
+        const QString want = wantedAssetPattern();
+        for (const QJsonValue& v : root.value(QStringLiteral("assets")).toArray()) {
+            const QJsonObject a = v.toObject();
+            const QString name = a.value(QStringLiteral("name")).toString();
+            if (name.contains(want, Qt::CaseInsensitive)) {
+                assetName = name;
+                assetUrl = a.value(QStringLiteral("browser_download_url")).toString();
+                break;
+            }
+        }
+        evaluate(tag, assetUrl, assetName,
+                 root.value(QStringLiteral("html_url")).toString());
     });
 }
 
-void Updater::onReplyFinished(QNetworkReply* reply, bool silent, QWidget* parent) {
-    m_busy = false;
-    reply->deleteLater();
+void Updater::requestLatestViaRedirect() {
+    QNetworkRequest req((QUrl(QStringLiteral(
+        "https://github.com/VeDono/LightGet/releases/latest"))));
+    req.setRawHeader("User-Agent",
+                     QStringLiteral("LightGet/%1").arg(currentVersion()).toUtf8());
+    // Follow nothing: we want to READ the redirect target, which names the tag.
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::ManualRedirectPolicy);
+    req.setTransferTimeout(15000);
 
-    if (reply->error() != QNetworkReply::NoError) {
-        if (!silent) {
-            QMessageBox b(QMessageBox::Warning, Loc::t(QStringLiteral("update.title")),
-                          Loc::t(QStringLiteral("update.failed")).arg(reply->errorString()),
-                          QMessageBox::Ok, parent);
-            presentDialog(b);
-            b.exec();
+    QNetworkReply* reply = m_net->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const QUrl target =
+            reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl();
+        const QString path = target.isValid()
+                                 ? reply->url().resolved(target).path()
+                                 : QString();
+        // .../releases/tag/v1.0.9
+        const QString tag = path.section(QLatin1Char('/'), -1);
+        if (tag.isEmpty() || !tag.startsWith(QLatin1Char('v'))) {
+            fail(reply->error() != QNetworkReply::NoError
+                     ? reply->errorString()
+                     : Loc::t(QStringLiteral("update.rateLimited")));
+            return;
         }
-        return;
-    }
+        // Assets are named consistently by the release workflow, so the download
+        // URL can be derived without the API.
+        const QString name = conventionalAssetName();
+        const QString url = QStringLiteral(
+            "https://github.com/VeDono/LightGet/releases/download/%1/%2").arg(tag, name);
+        evaluate(tag, url, name,
+                 QStringLiteral("https://github.com/VeDono/LightGet/releases/tag/%1").arg(tag));
+    });
+}
 
-    const QJsonObject root =
-        QJsonDocument::fromJson(reply->readAll()).object();
-    const QString tag = root.value(QStringLiteral("tag_name")).toString();
-    const QString pageUrl = root.value(QStringLiteral("html_url")).toString();
-    if (tag.isEmpty()) {
-        if (!silent)
-            QMessageBox::warning(parent, Loc::t(QStringLiteral("update.title")),
-                                 Loc::t(QStringLiteral("update.failed"))
-                                     .arg(QStringLiteral("malformed response")));
-        return;
+void Updater::fail(const QString& detail) {
+    m_busy = false;
+    if (!m_silent) {
+        QMessageBox b(QMessageBox::Warning, Loc::t(QStringLiteral("update.title")),
+                      Loc::t(QStringLiteral("update.failed")).arg(detail),
+                      QMessageBox::Ok, m_parent);
+        presentDialog(b);
+        b.exec();
     }
+    emit finished();
+}
 
+void Updater::evaluate(const QString& tag, const QString& assetUrl,
+                       const QString& assetName, const QString& pageUrl) {
+    m_busy = false;
     if (!isNewerVersion(tag, currentVersion())) {
-        if (!silent) {
+        if (!m_silent) {
             QMessageBox b(QMessageBox::Information, Loc::t(QStringLiteral("update.title")),
                           Loc::t(QStringLiteral("update.upToDate")).arg(currentVersion()),
-                          QMessageBox::Ok, parent);
+                          QMessageBox::Ok, m_parent);
             presentDialog(b);
             b.exec();
         }
+        emit finished();
         return;
     }
-
-    // Pick this platform's asset.
-    QString assetUrl, assetName;
-    const QString want = wantedAssetPattern();
-    for (const QJsonValue& v : root.value(QStringLiteral("assets")).toArray()) {
-        const QJsonObject a = v.toObject();
-        const QString name = a.value(QStringLiteral("name")).toString();
-        if (name.contains(want, Qt::CaseInsensitive)) {
-            assetName = name;
-            assetUrl = a.value(QStringLiteral("browser_download_url")).toString();
-            break;
-        }
-    }
-
-    promptAndInstall(tag, assetUrl, assetName, pageUrl, parent);
+    promptAndInstall(tag, assetUrl, assetName, pageUrl, m_parent);
+    emit finished();
 }
 
 void Updater::promptAndInstall(const QString& version, const QString& assetUrl,
