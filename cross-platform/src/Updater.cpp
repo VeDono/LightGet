@@ -30,6 +30,7 @@
 #include <QScreen>
 #include <QStyleHints>
 #include <QStandardPaths>
+#include <QTextStream>
 #include <QTimer>
 #include <QUrl>
 
@@ -49,10 +50,22 @@ namespace {
 constexpr char kLatestReleaseApi[] =
     "https://api.github.com/repos/VeDono/LightGet/releases/latest";
 
+#if defined(Q_OS_WIN)
+// Installed by the Inno setup, or unzipped as a portable folder? Inno always drops
+// its uninstaller next to the executable; a portable copy has none. This decides
+// BOTH which asset to fetch and how to apply it — a portable user must not be
+// handed an installer (it would set up a second, separate copy).
+bool winIsInstalledBuild() {
+    return QFileInfo::exists(QCoreApplication::applicationDirPath()
+                             + QStringLiteral("/unins000.exe"));
+}
+#endif
+
 // Which release asset this build should download.
 QString wantedAssetPattern() {
 #if defined(Q_OS_WIN)
-    return QStringLiteral("LightGet-Setup-Windows");   // Inno installer (.exe)
+    return winIsInstalledBuild() ? QStringLiteral("LightGet-Setup-Windows")  // .exe
+                                 : QStringLiteral("LightGet-Windows-x64.zip"); // portable
 #elif defined(Q_OS_MACOS)
     return QStringLiteral("LightGet-macOS");           // .app in a .zip
 #else
@@ -64,7 +77,8 @@ QString wantedAssetPattern() {
 // unavailable and the download URL has to be derived from the tag.
 QString conventionalAssetName() {
 #if defined(Q_OS_WIN)
-    return QStringLiteral("LightGet-Setup-Windows-x64.exe");
+    return winIsInstalledBuild() ? QStringLiteral("LightGet-Setup-Windows-x64.exe")
+                                 : QStringLiteral("LightGet-Windows-x64.zip");
 #elif defined(Q_OS_MACOS)
     return QStringLiteral("LightGet-macOS.zip");
 #else
@@ -469,9 +483,52 @@ void Updater::downloadAndInstall(const QString& url, const QString& assetName,
 bool Updater::installDownloaded(const QString& filePath, QWidget* parent) {
 #if defined(Q_OS_WIN)
     Q_UNUSED(parent);
-    // The Inno installer closes the running tray app itself (CloseApplications=yes)
-    // and upgrades in place thanks to the stable AppId, then relaunches it.
-    if (!QProcess::startDetached(filePath, {})) return false;
+    if (filePath.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive)) {
+        // Installed build: the Inno installer closes the running tray app itself
+        // (CloseApplications=yes) and upgrades in place thanks to the stable AppId.
+        if (!QProcess::startDetached(filePath, {})) return false;
+        QTimer::singleShot(0, qApp, &QApplication::quit);
+        return true;
+    }
+
+    // Portable build: unpack the zip and copy it over our own folder. The running
+    // .exe is locked, so a detached PowerShell step waits for this process to exit
+    // first, then copies and relaunches. If the copy fails (e.g. the folder lives
+    // somewhere that needs elevation) it still relaunches the existing build, so a
+    // failed update is a no-op rather than a broken install.
+    const QString tmp = QFileInfo(filePath).absolutePath()
+                      + QStringLiteral("/LightGetUpdate");
+    QDir(tmp).removeRecursively();
+    QDir().mkpath(tmp);
+
+    const QStringList psBase{QStringLiteral("-NoProfile"),
+                             QStringLiteral("-ExecutionPolicy"), QStringLiteral("Bypass")};
+    QStringList expand = psBase;
+    expand << QStringLiteral("-Command")
+           << QStringLiteral("Expand-Archive -LiteralPath '%1' -DestinationPath '%2' -Force")
+                  .arg(QDir::toNativeSeparators(filePath), QDir::toNativeSeparators(tmp));
+    if (QProcess::execute(QStringLiteral("powershell"), expand) != 0) return false;
+    if (!QFileInfo::exists(tmp + QStringLiteral("/LightGet.exe"))) return false;
+
+    const QString appDir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
+    const QString script = tmp + QStringLiteral("/apply.ps1");
+    QFile s(script);
+    if (!s.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
+    {
+        QTextStream ts(&s);
+        ts << "$ErrorActionPreference = 'SilentlyContinue'\r\n";
+        ts << QStringLiteral("try { Wait-Process -Id %1 -Timeout 30 } catch {}\r\n")
+                  .arg(QCoreApplication::applicationPid());
+        ts << QStringLiteral("Copy-Item -Path '%1\\*' -Destination '%2' -Recurse -Force\r\n")
+                  .arg(QDir::toNativeSeparators(tmp), appDir);
+        ts << QStringLiteral("Start-Process -FilePath '%1\\LightGet.exe'\r\n").arg(appDir);
+    }
+    s.close();
+
+    QStringList run = psBase;
+    run << QStringLiteral("-WindowStyle") << QStringLiteral("Hidden")
+        << QStringLiteral("-File") << QDir::toNativeSeparators(script);
+    if (!QProcess::startDetached(QStringLiteral("powershell"), run)) return false;
     QTimer::singleShot(0, qApp, &QApplication::quit);
     return true;
 
