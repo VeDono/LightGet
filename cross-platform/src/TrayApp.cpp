@@ -45,13 +45,14 @@ namespace {
 
 // Menu-item glyphs, painted 1:1 with the user's tray-menu design (24x24 viewBox):
 //   Capture  -> viewfinder (4 corner brackets + center dot)
+//   Update   -> circular refresh arrow
 //   Settings -> sliders (two rows, each a track + knob)
 //   Power    -> power symbol (stem + ~300° ring open at the top)
 // macOS has no freedesktop icon theme, so these supply the menu icons. They are
 // NOT template masks: we paint an explicit themed-gray pixmap for the Normal
 // state and a WHITE pixmap for the Selected/Active state, so the icon turns white
 // together with the label when the row is highlighted (accent background).
-enum class MenuGlyph { Capture, Settings, Power };
+enum class MenuGlyph { Capture, Settings, Update, Power };
 
 QPixmap paintMenuGlyphPixmap(MenuGlyph kind, const QColor& color, int side) {
     const qreal dpr = 2.0;
@@ -84,6 +85,33 @@ QPixmap paintMenuGlyphPixmap(MenuGlyph kind, const QColor& color, int side) {
         p.drawLine(PT(4, 17), PT(9, 17));
         p.drawLine(PT(13, 17),PT(20, 17));
         p.drawEllipse(PT(11, 17), 2 * sc, 2 * sc);
+        break;
+    }
+    case MenuGlyph::Update: {
+        // Refresh/sync: a ring open at the top-right with an arrowhead on that
+        // end, plus a small downward tick inside — reads as "check for a newer
+        // version" rather than the viewfinder the Capture row uses.
+        const QPointF cc = PT(12, 12);
+        const qreal rr = 7.2 * sc;
+        QPainterPath ring;
+        bool first = true;
+        for (int deg = -35; deg <= 265; deg += 5) {   // gap at the top-right
+            const qreal a = deg * M_PI / 180.0;
+            const QPointF pt(cc.x() + rr * std::cos(a), cc.y() + rr * std::sin(a));
+            if (first) { ring.moveTo(pt); first = false; } else ring.lineTo(pt);
+        }
+        p.drawPath(ring);
+
+        // Arrowhead at the open end (-35°), pointing along the circle's tangent.
+        const qreal a0 = -35.0 * M_PI / 180.0;
+        const QPointF tip(cc.x() + rr * std::cos(a0), cc.y() + rr * std::sin(a0));
+        const qreal head = 3.1 * sc;
+        QPainterPath arrow;
+        arrow.moveTo(tip);
+        arrow.lineTo(tip.x() - head * 0.15, tip.y() - head);          // up
+        arrow.moveTo(tip);
+        arrow.lineTo(tip.x() + head * 0.85, tip.y() - head * 0.35);   // right
+        p.drawPath(arrow);
         break;
     }
     case MenuGlyph::Power: {
@@ -467,7 +495,7 @@ void TrayApp::applyMenuTheme() {
     const QColor iconColor = dark ? QColor("#c7c7cc") : QColor("#4a4a4f");
     if (m_captureAction)  m_captureAction->setIcon(makeMenuGlyph(MenuGlyph::Capture, iconColor));
     if (m_settingsAction) m_settingsAction->setIcon(makeMenuGlyph(MenuGlyph::Settings, iconColor));
-    if (m_updateAction)   m_updateAction->setIcon(makeMenuGlyph(MenuGlyph::Capture, iconColor));
+    if (m_updateAction)   m_updateAction->setIcon(makeMenuGlyph(MenuGlyph::Update, iconColor));
     if (m_quitAction)     m_quitAction->setIcon(makeMenuGlyph(MenuGlyph::Power, iconColor));
 }
 
