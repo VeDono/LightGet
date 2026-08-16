@@ -49,6 +49,7 @@
 // anonymous namespace below it would get internal linkage and never resolve.
 QPixmap LightGet_debugMenuGlyph(int kind, const QColor& color, int side);
 QPixmap LightGet_debugUpdateDialog(bool dark);
+QPixmap LightGet_debugCrosshair(qreal dpr);
 
 namespace {
 
@@ -236,6 +237,21 @@ int runRenderDump(const QString& dir) {
     // this is where the in-tab scrolling (tabs must stay put) is reviewed.
     ok &= dumpOne(dir, QStringLiteral("light"), /*dark=*/false, 0, 620,
                   QStringLiteral("_short"));
+    {   // crosshair contrast check over light / mid / dark / busy backgrounds
+        const QPixmap cur = LightGet_debugCrosshair(2.0);
+        const int cell = 90, n = 4;
+        QImage strip(cell * n, cell, QImage::Format_ARGB32_Premultiplied);
+        QPainter cp(&strip);
+        const QColor bgs[n] = {QColor("#ffffff"), QColor("#8a8a8f"),
+                               QColor("#1a1a1c"), QColor("#0a84ff")};
+        for (int i = 0; i < n; ++i) {
+            cp.fillRect(i * cell, 0, cell, cell, bgs[i]);
+            const int w = cur.width() / int(cur.devicePixelRatio());
+            cp.drawPixmap(i * cell + (cell - w) / 2, (cell - w) / 2, cur);
+        }
+        cp.end();
+        strip.save(QDir(dir).filePath(QStringLiteral("current_crosshair.png")), "PNG");
+    }
     ok &= dumpMenuGlyphs(dir, QStringLiteral("light"), /*dark=*/false);
     ok &= dumpMenuGlyphs(dir, QStringLiteral("dark"),  /*dark=*/true);
     ok &= dumpToolbar(dir, QStringLiteral("light"), /*dark=*/false);
