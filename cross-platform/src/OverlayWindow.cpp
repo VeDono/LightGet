@@ -26,6 +26,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QCursor>
+#include <QHash>
 #include <QTextEdit>
 #include <QTextDocument>
 #include <QTextCursor>
@@ -58,6 +59,64 @@
 // ============================================================================
 // Construction / lifecycle
 // ============================================================================
+
+
+// ---------------------------------------------------------------------------
+// Selection crosshair.
+//
+// Qt::CrossCursor resolves to the OS stock crosshair. On macOS that is a fine
+// thin cross, but on Windows (IDC_CROSS) and X11 it is a thick solid-black one
+// that vanishes against dark windows and hides the very pixels being aimed at.
+// Paint our own there: thin black arms with a white halo so it reads on ANY
+// background, and a small gap in the middle so the target pixel stays visible.
+// ---------------------------------------------------------------------------
+QCursor makeCrosshairCursor(qreal dpr) {
+    const int side = 26;                       // logical size
+    const qreal c = side / 2.0;                // centre
+    const qreal gap = 3.5;                     // clear hole around the hot spot
+    const qreal arm = c - 1.0;
+
+    QPixmap pm(int(std::ceil(side * dpr)), int(std::ceil(side * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, false);   // crisp 1px lines
+    const QList<QLineF> arms = {
+        QLineF(c, c - gap, c, c - arm),   // up
+        QLineF(c, c + gap, c, c + arm),   // down
+        QLineF(c - gap, c, c - arm, c),   // left
+        QLineF(c + gap, c, c + arm, c),   // right
+    };
+    // Halo first, then the line on top.
+    p.setPen(QPen(QColor(255, 255, 255, 200), 3.0));
+    for (const QLineF& l : arms) p.drawLine(l);
+    p.setPen(QPen(QColor(0, 0, 0, 235), 1.0));
+    for (const QLineF& l : arms) p.drawLine(l);
+    p.end();
+
+    return QCursor(pm, int(c), int(c));
+}
+
+// Cached per device-pixel-ratio; cursors are created rarely but set often.
+QCursor overlayCrosshair(qreal dpr) {
+#if defined(Q_OS_MACOS)
+    Q_UNUSED(dpr);
+    return QCursor(Qt::CrossCursor);   // the native one already looks right
+#else
+    static QHash<int, QCursor> cache;
+    const int key = int(dpr * 100);
+    auto it = cache.find(key);
+    if (it == cache.end()) it = cache.insert(key, makeCrosshairCursor(dpr));
+    return it.value();
+#endif
+}
+
+// Render-harness export: the painted crosshair, so its contrast can be reviewed
+// offscreen (it only ships on Windows/Linux, where it cannot be eyeballed here).
+QPixmap LightGet_debugCrosshair(qreal dpr) {
+    return makeCrosshairCursor(dpr).pixmap();
+}
 
 OverlayWindow::OverlayWindow(const QImage& screenshot, QScreen* screen, QWidget* parent)
     : QWidget(parent)
@@ -101,7 +160,7 @@ OverlayWindow::OverlayWindow(const QImage& screenshot, QScreen* screen, QWidget*
 
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
-    setCursor(Qt::CrossCursor);   // crosshair until a selection exists
+    setCursor(overlayCrosshair(devicePixelRatioF()));   // crosshair until a selection exists
 
     if (m_screen) {
         setGeometry(m_screen->geometry());
@@ -156,7 +215,7 @@ void OverlayWindow::clearSelectionState() {
     m_activeTextIndex.reset();
     m_dragMode = DragMode::None;
     hideToolbar();
-    setCursor(Qt::CrossCursor);
+    setCursor(overlayCrosshair(devicePixelRatioF()));
     update();
 }
 
@@ -903,7 +962,7 @@ void OverlayWindow::updateHoverCursor(const QPointF& p) {
     if (m_cursorRectsDisabled) return;   // suppressed during a custom-cursor drag
 
     if (!m_selection) {
-        setCursor(Qt::CrossCursor);   // no selection yet -> crosshair everywhere
+        setCursor(overlayCrosshair(devicePixelRatioF()));   // no selection yet -> crosshair everywhere
         return;
     }
     const QRectF sel = *m_selection;
@@ -912,7 +971,7 @@ void OverlayWindow::updateHoverCursor(const QPointF& p) {
         // Over a handle -> resize arrow; over body -> open hand.
         if (auto h = handleHit(p, sel)) { setCursor(resizeCursorFor(*h)); return; }
         if (sel.contains(p)) { setCursor(Qt::OpenHandCursor); return; }
-        setCursor(Qt::CrossCursor);
+        setCursor(overlayCrosshair(devicePixelRatioF()));
         break;
     case Tool::Text:
         if (m_editingIndex == -1 && m_activeTextIndex) {
@@ -920,7 +979,7 @@ void OverlayWindow::updateHoverCursor(const QPointF& p) {
             if (idx < m_annotations.size() && m_annotations[idx].tool == Tool::Text) {
                 const Annotation& a = m_annotations[idx];
                 if (screenRectAround(resizeHandleLocal(a), a).contains(p)) {
-                    setCursor(Qt::CrossCursor); return;
+                    setCursor(overlayCrosshair(devicePixelRatioF())); return;
                 }
                 if (screenRectAround(rotateHandleLocal(a), a).contains(p)) {
                     setCursor(Qt::OpenHandCursor); return;
@@ -928,10 +987,10 @@ void OverlayWindow::updateHoverCursor(const QPointF& p) {
             }
         }
         if (sel.contains(p)) { setCursor(Qt::IBeamCursor); return; }
-        setCursor(Qt::CrossCursor);
+        setCursor(overlayCrosshair(devicePixelRatioF()));
         break;
     default:
-        setCursor(Qt::CrossCursor);
+        setCursor(overlayCrosshair(devicePixelRatioF()));
         break;
     }
 }
@@ -1014,7 +1073,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
                 m_dragMode = DragMode::ResizeText;
                 m_textResizeStartSize = a.fontSize;
                 m_textResizeStartPoint = p;
-                setCursor(Qt::CrossCursor);
+                setCursor(overlayCrosshair(devicePixelRatioF()));
             }
             beginCustomCursorDrag();
             // Seed the dirty-rect cache with the freshly-committed text's bounds
@@ -1073,7 +1132,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
                         m_dragMode = DragMode::ResizeText;
                         m_textResizeStartSize = a.fontSize;
                         m_textResizeStartPoint = p;
-                        setCursor(Qt::CrossCursor);
+                        setCursor(overlayCrosshair(devicePixelRatioF()));
                         beginCustomCursorDrag();
                         handled = true;
                     } else if (textLocalRect(a).adjusted(-3, -3, 3, 3).contains(lp)) {
@@ -1185,7 +1244,7 @@ void OverlayWindow::mouseMoveEvent(QMouseEvent* e) {
         break;
     case DragMode::ResizeText:
         if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
-            setCursor(Qt::CrossCursor);
+            setCursor(overlayCrosshair(devicePixelRatioF()));
             const qreal dy = p.y() - m_textResizeStartPoint.y();   // drag down = larger
             m_annotations[*m_activeTextIndex].fontSize = std::max<qreal>(8, m_textResizeStartSize + dy);
             updateTextInspector();
