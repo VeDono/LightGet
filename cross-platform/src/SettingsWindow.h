@@ -87,6 +87,13 @@ private:
     void reloadUI();                 // full teardown + rebuild of both tabs
     void buildUI();
     QWidget* buildTitleBar();        // 46px chrome: traffic lights + centered title
+    // Wrap a tab page so ONLY its content scrolls: the title bar, the tab row and
+    // the page panel stay put (scrolling the whole body moved the tabs off-screen).
+    QWidget* wrapScrollable(QWidget* page);
+    // Theme switches rebuild the whole UI; defer that until the Appearance pill has
+    // finished sliding and cross-fade the old look into the new one.
+    void scheduleThemedReload();
+    void startThemeCrossfade(const QPixmap& before);
     QWidget* buildGeneralTab();
     QWidget* buildFeaturesTab();
     void addAboutSection(QVBoxLayout* generalCol);
@@ -129,6 +136,7 @@ private:
     QPushButton* m_tabGeneral = nullptr;     // centered rounded folder tab buttons
     QPushButton* m_tabFeatures = nullptr;
     int m_currentTab = 0;                    // 0 = general, 1 = features
+    bool m_reloadScheduled = false;          // a themed rebuild is pending
     HotkeyRecorder* m_recorder = nullptr;    // reused member across rebuilds
 
     // Title-bar drag state (frameless window dragged by the custom chrome).
