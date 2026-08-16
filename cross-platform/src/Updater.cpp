@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QDesktopServices>
+#include <QDialog>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
@@ -25,6 +26,12 @@
 
 #ifndef LIGHTGET_VERSION
 #define LIGHTGET_VERSION "0.0.0"
+#endif
+
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+// Implemented in mac/MacNative.mm. MUST be declared at file scope: inside the
+// anonymous namespace below it would get internal linkage and fail to link.
+extern void MacNative_activateApp();
 #endif
 
 namespace {
@@ -59,6 +66,19 @@ QList<int> versionParts(QString v) {
         parts << n;
     }
     return parts;
+}
+
+// LightGet is an accessory/tray app, so a dialog it opens can end up BEHIND the
+// window the user is looking at (the same class of bug as the tray menu's first
+// click). Bring the app forward and raise the box once the modal loop starts.
+void presentDialog(QDialog& box) {
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+    MacNative_activateApp();
+#endif
+    QTimer::singleShot(0, &box, [&box]() {
+        box.raise();
+        box.activateWindow();
+    });
 }
 
 } // namespace
@@ -108,9 +128,11 @@ void Updater::onReplyFinished(QNetworkReply* reply, bool silent, QWidget* parent
 
     if (reply->error() != QNetworkReply::NoError) {
         if (!silent) {
-            QMessageBox::warning(parent, Loc::t(QStringLiteral("update.title")),
-                                 Loc::t(QStringLiteral("update.failed"))
-                                     .arg(reply->errorString()));
+            QMessageBox b(QMessageBox::Warning, Loc::t(QStringLiteral("update.title")),
+                          Loc::t(QStringLiteral("update.failed")).arg(reply->errorString()),
+                          QMessageBox::Ok, parent);
+            presentDialog(b);
+            b.exec();
         }
         return;
     }
@@ -129,9 +151,11 @@ void Updater::onReplyFinished(QNetworkReply* reply, bool silent, QWidget* parent
 
     if (!isNewerVersion(tag, currentVersion())) {
         if (!silent) {
-            QMessageBox::information(parent, Loc::t(QStringLiteral("update.title")),
-                                     Loc::t(QStringLiteral("update.upToDate"))
-                                         .arg(currentVersion()));
+            QMessageBox b(QMessageBox::Information, Loc::t(QStringLiteral("update.title")),
+                          Loc::t(QStringLiteral("update.upToDate")).arg(currentVersion()),
+                          QMessageBox::Ok, parent);
+            presentDialog(b);
+            b.exec();
         }
         return;
     }
@@ -173,6 +197,7 @@ void Updater::promptAndInstall(const QString& version, const QString& assetUrl,
         QMessageBox::AcceptRole);
     box.addButton(Loc::t(QStringLiteral("update.later")), QMessageBox::RejectRole);
     box.setDefaultButton(primary);
+    presentDialog(box);
     box.exec();
     if (box.clickedButton() != static_cast<QAbstractButton*>(primary)) return;
 

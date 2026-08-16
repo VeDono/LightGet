@@ -634,7 +634,7 @@ private:
 // Version + edition (set as compile definitions in CMakeLists.txt). Defaults
 // keep the file self-contained if a definition is ever missing.
 #ifndef LIGHTGET_VERSION
-#define LIGHTGET_VERSION "1.0.7"
+#define LIGHTGET_VERSION "1.0.8"
 #endif
 #ifndef LIGHTGET_EDITION
 #define LIGHTGET_EDITION "Cross-platform (Qt 6)"
@@ -1693,6 +1693,26 @@ void SettingsWindow::buildUI() {
     scroll->setAttribute(Qt::WA_TranslucentBackground, true);
     scroll->viewport()->setAutoFillBackground(false);
     scroll->setWidget(body);
+    // setWidget() force-enables autoFillBackground on the widget, which paints an
+    // opaque rectangle over the window's rounded BOTTOM corners (paintEvent draws
+    // a 12px rounded path; the top is covered by the title bar, which rounds its
+    // own top). Turn it back off so the corners stay transparent.
+    body->setAutoFillBackground(false);
+    // Slim overlay-style scrollbar with a TRANSPARENT track: the default one is an
+    // opaque strip down the right edge, which painted over the window's rounded
+    // bottom-right corner. The bottom margin also keeps the handle clear of it.
+    scroll->setStyleSheet(QStringLiteral(
+        "QScrollArea { background: transparent; border: none; }"
+        "QScrollBar:vertical { background: transparent; width: 8px;"
+        " margin: 2px 1px 12px 0; }"
+        "QScrollBar::handle:vertical { background: %1; border-radius: 4px;"
+        " min-height: 28px; }"
+        "QScrollBar::handle:vertical:hover { background: %2; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {"
+        " background: transparent; }")
+        .arg(colCss(m_tk.dark ? QColor(255, 255, 255, 60) : QColor(0, 0, 0, 55)),
+             colCss(m_tk.dark ? QColor(255, 255, 255, 95) : QColor(0, 0, 0, 90))));
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
