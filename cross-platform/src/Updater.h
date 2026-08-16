@@ -44,8 +44,20 @@ public:
     // The version this binary was built as (LIGHTGET_VERSION).
     static QString currentVersion();
 
+signals:
+    // A check ended — success, up-to-date, or failure. Lets the caller restore a
+    // "Checking…" affordance.
+    void finished();
+
 private:
-    void onReplyFinished(class QNetworkReply* reply, bool silent, QWidget* parent);
+    void requestLatestViaApi();
+    // Fallback that does not touch the API: GitHub redirects
+    // /releases/latest -> /releases/tag/<tag>, which is not rate limited. Asset
+    // URLs are then built from the naming convention the release workflow uses.
+    void requestLatestViaRedirect();
+    void evaluate(const QString& tag, const QString& assetUrl,
+                  const QString& assetName, const QString& pageUrl);
+    void fail(const QString& detail);
     void promptAndInstall(const QString& version, const QString& assetUrl,
                           const QString& assetName, const QString& pageUrl,
                           QWidget* parent);
@@ -56,4 +68,6 @@ private:
     QString m_pendingVersion;   // shown in the download window
     QNetworkAccessManager* m_net = nullptr;
     bool m_busy = false;
+    bool m_silent = false;      // current check's mode
+    QWidget* m_parent = nullptr;
 };

@@ -304,7 +304,22 @@ void TrayApp::start() {
 }
 
 void TrayApp::checkForUpdates(bool silent) {
-    if (!m_updater) m_updater = new Updater(this);
+    if (!m_updater) {
+        m_updater = new Updater(this);
+        // Restore the menu row once a check ends, whatever the outcome.
+        connect(m_updater, &Updater::finished, this, [this]() {
+            if (m_updateAction) {
+                m_updateAction->setEnabled(true);
+                m_updateAction->setText(Loc::t(QStringLiteral("menu.checkUpdates")));
+            }
+        });
+    }
+    // Without this a manual check looks like nothing happened while the request is
+    // in flight (and a second click was silently ignored as "already busy").
+    if (!silent && m_updateAction) {
+        m_updateAction->setEnabled(false);
+        m_updateAction->setText(Loc::t(QStringLiteral("menu.checking")));
+    }
     m_updater->check(silent, m_settings);
 }
 

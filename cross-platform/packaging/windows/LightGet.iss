@@ -10,7 +10,7 @@
 ; Output: Output\LightGet-Setup-Windows-x64.exe
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.9"
+  #define MyAppVersion "1.0.10"
 #endif
 #ifndef DistDir
   #define DistDir "dist"
