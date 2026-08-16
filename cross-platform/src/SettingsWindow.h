@@ -52,6 +52,10 @@ struct DesignTokens {
     QColor resetFg, icon, checkOn;
 };
 
+// Resolve the app's design tokens for a light or dark scheme. Exposed so other
+// windows (the updater's progress dialog) render in the same design language.
+DesignTokens lightgetDesignTokens(bool dark);
+
 class SettingsWindow : public QDialog {
     Q_OBJECT
 public:

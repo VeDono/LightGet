@@ -634,7 +634,7 @@ private:
 // Version + edition (set as compile definitions in CMakeLists.txt). Defaults
 // keep the file self-contained if a definition is ever missing.
 #ifndef LIGHTGET_VERSION
-#define LIGHTGET_VERSION "1.0.8"
+#define LIGHTGET_VERSION "1.0.9"
 #endif
 #ifndef LIGHTGET_EDITION
 #define LIGHTGET_EDITION "Cross-platform (Qt 6)"
@@ -1437,12 +1437,8 @@ void SettingsWindow::applyAppearance(const QString& mode) {
 // ---------------------------------------------------------------------------
 // Theme tokens
 // ---------------------------------------------------------------------------
-void SettingsWindow::resolveTokens() {
-    // Decide light vs. dark from the window color's lightness (works on every
-    // platform without an explicit app theme setting).
-    const QColor win = palette().color(QPalette::Window);
-    const bool dark = win.lightness() < 128;
-    DesignTokens& t = m_tk;
+DesignTokens lightgetDesignTokens(bool dark) {
+    DesignTokens t;
     t.dark = dark;
     if (dark) {
         t.bg          = QColor("#1a1a1c");
@@ -1483,6 +1479,13 @@ void SettingsWindow::resolveTokens() {
         t.icon        = QColor("#44454a");
         t.checkOn     = QColor("#007aff");
     }
+    return t;
+}
+
+void SettingsWindow::resolveTokens() {
+    // Decide light vs. dark from the window color's lightness (works on every
+    // platform without an explicit app theme setting).
+    m_tk = lightgetDesignTokens(palette().color(QPalette::Window).lightness() < 128);
 }
 
 // ---------------------------------------------------------------------------

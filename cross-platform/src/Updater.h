@@ -53,6 +53,7 @@ private:
                             QWidget* parent);
     bool installDownloaded(const QString& filePath, QWidget* parent);
 
+    QString m_pendingVersion;   // shown in the download window
     QNetworkAccessManager* m_net = nullptr;
     bool m_busy = false;
 };
