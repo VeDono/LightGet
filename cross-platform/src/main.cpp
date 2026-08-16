@@ -125,7 +125,8 @@ bool dumpMenuGlyphs(const QString& dir, const QString& theme, bool dark) {
 // Grab one tab of a freshly-built SettingsWindow under the given palette/theme
 // and save it. Building a fresh window per (theme, tab) keeps each capture clean
 // and avoids relying on changeEvent timing. Returns true on a successful save.
-bool dumpOne(const QString& dir, const QString& theme, bool dark, int tabIndex) {
+bool dumpOne(const QString& dir, const QString& theme, bool dark, int tabIndex,
+             int forcedHeight = 840, const QString& suffix = QString()) {
     QApplication::setPalette(dark ? makeDarkPalette() : makeLightPalette());
     if (auto* hints = QGuiApplication::styleHints())
         hints->setColorScheme(dark ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light);
@@ -136,7 +137,7 @@ bool dumpOne(const QString& dir, const QString& theme, bool dark, int tabIndex) 
     // overflow (so it fits 768p laptops). For design comparison we want the whole
     // page in one image, so grab it at the full design height instead of whatever
     // the offscreen screen reports — otherwise the About footer is below the fold.
-    w.setFixedSize(500, 840);
+    w.setFixedSize(500, forcedHeight);
     w.ensurePolished();
 
     // Switch the active tab via the real tab button (checkable, in the exclusive
@@ -158,8 +159,8 @@ bool dumpOne(const QString& dir, const QString& theme, bool dark, int tabIndex) 
 
     const QString tabName = (tabIndex == 1) ? QStringLiteral("features")
                                             : QStringLiteral("general");
-    const QString path =
-        QDir(dir).filePath(QStringLiteral("current_%1_%2.png").arg(tabName, theme));
+    const QString path = QDir(dir).filePath(
+        QStringLiteral("current_%1%2_%3.png").arg(tabName, suffix, theme));
 
     const QPixmap pm = w.grab();
     const QImage img = pm.toImage();
@@ -231,6 +232,10 @@ int runRenderDump(const QString& dir) {
         bgimg.save(QDir(dir).filePath(QStringLiteral("current_updatedialog_%1.png")
                                           .arg(dk ? "dark" : "light")), "PNG");
     }
+    // Short-screen variant: the window clamps its height on small displays, so
+    // this is where the in-tab scrolling (tabs must stay put) is reviewed.
+    ok &= dumpOne(dir, QStringLiteral("light"), /*dark=*/false, 0, 620,
+                  QStringLiteral("_short"));
     ok &= dumpMenuGlyphs(dir, QStringLiteral("light"), /*dark=*/false);
     ok &= dumpMenuGlyphs(dir, QStringLiteral("dark"),  /*dark=*/true);
     ok &= dumpToolbar(dir, QStringLiteral("light"), /*dark=*/false);

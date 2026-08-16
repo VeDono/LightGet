@@ -61,6 +61,9 @@
 #include <QScreen>
 #include <QGuiApplication>
 #include <QScrollArea>
+#include <QTimer>
+#include <QScrollBar>
+#include <QGraphicsOpacityEffect>
 #include <QStyleHints>
 #include <QCursor>
 #include <QSignalBlocker>
@@ -634,7 +637,7 @@ private:
 // Version + edition (set as compile definitions in CMakeLists.txt). Defaults
 // keep the file self-contained if a definition is ever missing.
 #ifndef LIGHTGET_VERSION
-#define LIGHTGET_VERSION "1.0.10"
+#define LIGHTGET_VERSION "1.0.11"
 #endif
 #ifndef LIGHTGET_EDITION
 #define LIGHTGET_EDITION "Cross-platform (Qt 6)"
@@ -1366,7 +1369,7 @@ void SettingsWindow::changeEvent(QEvent* e) {
     // against rebuilding during teardown.
     if (e->type() == QEvent::PaletteChange ||
         e->type() == QEvent::ApplicationPaletteChange) {
-        if (m_stack) reloadUI();
+        if (m_stack) scheduleThemedReload();
     }
 }
 
@@ -1557,6 +1560,46 @@ QWidget* SettingsWindow::makeToggleRow(const QString& label, QWidget* toggle,
     return row;
 }
 
+void SettingsWindow::scheduleThemedReload() {
+    if (m_reloadScheduled) return;
+    m_reloadScheduled = true;
+    // Snapshot the CURRENT theme first — it becomes the top layer of the crossfade.
+    const QPixmap before = grab();
+    // Rebuilding straight away destroyed the Appearance control mid-slide, which is
+    // why switching to/from Dark snapped while Auto<->Light glided: that pair
+    // usually leaves the palette untouched, so no rebuild was triggered. Wait for
+    // the pill animation (240ms) to finish, then swap the UI under a fade.
+    QTimer::singleShot(260, this, [this, before]() {
+        m_reloadScheduled = false;
+        reloadUI();
+        startThemeCrossfade(before);
+    });
+}
+
+void SettingsWindow::startThemeCrossfade(const QPixmap& before) {
+    if (before.isNull()) return;
+    // The old theme, painted on top of the freshly rebuilt one and faded out, so
+    // the window melts from one scheme into the other instead of snapping.
+    auto* ghost = new QLabel(this);
+    ghost->setPixmap(before);
+    ghost->setScaledContents(true);
+    ghost->setGeometry(rect());
+    ghost->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    auto* fx = new QGraphicsOpacityEffect(ghost);
+    ghost->setGraphicsEffect(fx);
+    fx->setOpacity(1.0);
+    ghost->show();
+    ghost->raise();
+
+    auto* fade = new QPropertyAnimation(fx, "opacity", ghost);
+    fade->setDuration(260);
+    fade->setStartValue(1.0);
+    fade->setEndValue(0.0);
+    fade->setEasingCurve(QEasingCurve::InOutQuad);
+    connect(fade, &QPropertyAnimation::finished, ghost, &QObject::deleteLater);
+    fade->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
 void SettingsWindow::reloadUI() {
     // Full teardown + rebuild of both tabs. The recorder is a reused member
     // (reparented into the rebuilt tab), so detach it before tearing down so it
@@ -1684,44 +1727,11 @@ void SettingsWindow::buildUI() {
     bodyCol->addSpacing(-1);
     bodyCol->addWidget(m_stack, 1);
 
-    // Wrap the body in a scroll area so that when the window height was clamped
-    // below the design's 840 (small screens), the overflowing rows stay reachable
-    // by scrolling instead of being clipped off the bottom. The title bar stays
-    // pinned above it, always draggable/closable. On full-height screens the
-    // content fits and no scrollbar shows.
-    auto* scroll = new QScrollArea;
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setAttribute(Qt::WA_TranslucentBackground, true);
-    scroll->viewport()->setAutoFillBackground(false);
-    scroll->setWidget(body);
-    // setWidget() force-enables autoFillBackground on the widget, which paints an
-    // opaque rectangle over the window's rounded BOTTOM corners (paintEvent draws
-    // a 12px rounded path; the top is covered by the title bar, which rounds its
-    // own top). Turn it back off so the corners stay transparent.
-    body->setAutoFillBackground(false);
-    // Slim overlay-style scrollbar with a TRANSPARENT track: the default one is an
-    // opaque strip down the right edge, which painted over the window's rounded
-    // bottom-right corner. The bottom margin also keeps the handle clear of it.
-    scroll->setStyleSheet(QStringLiteral(
-        "QScrollArea { background: transparent; border: none; }"
-        "QScrollBar:vertical { background: transparent; width: 8px;"
-        " margin: 2px 1px 12px 0; }"
-        "QScrollBar::handle:vertical { background: %1; border-radius: 4px;"
-        " min-height: 28px; }"
-        "QScrollBar::handle:vertical:hover { background: %2; }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {"
-        " background: transparent; }")
-        .arg(colCss(m_tk.dark ? QColor(255, 255, 255, 60) : QColor(0, 0, 0, 55)),
-             colCss(m_tk.dark ? QColor(255, 255, 255, 95) : QColor(0, 0, 0, 90))));
-
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
     root->addWidget(m_titleBar);
-    root->addWidget(scroll, 1);
+    root->addWidget(body, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1787,6 +1797,41 @@ QWidget* SettingsWindow::buildTitleBar() {
 // ---------------------------------------------------------------------------
 // General tab
 // ---------------------------------------------------------------------------
+QWidget* SettingsWindow::wrapScrollable(QWidget* page) {
+    // Scrolls the page CONTENT inside the fixed panel. The window clamps its
+    // height to the screen work area, so on short screens the rows that do not
+    // fit stay reachable — without the tab row scrolling away with them.
+    auto* scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Hiding the bar still leaves the area scrollable sideways by trackpad, which
+    // drifted the whole page off-centre. Pin it at 0 so it cannot move at all.
+    scroll->horizontalScrollBar()->setEnabled(false);
+    connect(scroll->horizontalScrollBar(), &QScrollBar::valueChanged, scroll,
+            [bar = scroll->horizontalScrollBar()](int v) { if (v != 0) bar->setValue(0); });
+    scroll->setAttribute(Qt::WA_TranslucentBackground, true);
+    scroll->viewport()->setAutoFillBackground(false);
+    scroll->setWidget(page);
+    // setWidget() force-enables an opaque fill on the page; that would hide the
+    // panel's rounded corners behind a square rectangle.
+    page->setAutoFillBackground(false);
+    // Slim overlay scrollbar with a transparent track, so the panel shows through.
+    scroll->setStyleSheet(QStringLiteral(
+        "QScrollArea { background: transparent; border: none; }"
+        "QScrollBar:vertical { background: transparent; width: 8px;"
+        " margin: 4px 2px 4px 0; }"
+        "QScrollBar::handle:vertical { background: %1; border-radius: 4px;"
+        " min-height: 28px; }"
+        "QScrollBar::handle:vertical:hover { background: %2; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {"
+        " background: transparent; }")
+        .arg(colCss(m_tk.dark ? QColor(255, 255, 255, 60) : QColor(0, 0, 0, 55)),
+             colCss(m_tk.dark ? QColor(255, 255, 255, 95) : QColor(0, 0, 0, 90))));
+    return scroll;
+}
+
 QWidget* SettingsWindow::buildGeneralTab() {
     Settings& s = Settings::instance();
 
@@ -2026,9 +2071,7 @@ QWidget* SettingsWindow::buildGeneralTab() {
     // About section pinned at the bottom of the General tab.
     addAboutSection(outer);
 
-    // Wrap the page in a scroll-friendly plain widget (kept simple; fixed-size
-    // window means it won't normally scroll, but the layout won't clip).
-    return page;
+    return wrapScrollable(page);
 }
 
 // ---------------------------------------------------------------------------
@@ -2256,7 +2299,7 @@ QWidget* SettingsWindow::buildFeaturesTab() {
                             .arg(colCss(m_tk.text3)));
     v->addWidget(hint);
 
-    return page;
+    return wrapScrollable(page);
 }
 
 // ---------------------------------------------------------------------------
