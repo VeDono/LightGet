@@ -31,6 +31,7 @@
 #include <QDir>
 #include <QImage>
 #include <QList>
+#include <QPainter>
 #include <QPalette>
 #include <QPixmap>
 #include <QPushButton>
@@ -43,6 +44,11 @@
 #ifndef LIGHTGET_APP_NAME
 #define LIGHTGET_APP_NAME "LightGet"
 #endif
+
+// Implemented in TrayApp.cpp. MUST be declared at file scope — inside the
+// anonymous namespace below it would get internal linkage and never resolve.
+QPixmap LightGet_debugMenuGlyph(int kind, const QColor& color, int side);
+QPixmap LightGet_debugUpdateDialog(bool dark);
 
 namespace {
 
@@ -91,6 +97,29 @@ QPalette makeDarkPalette() {
     p.setColor(QPalette::ToolTipBase,     QColor("#262629"));
     p.setColor(QPalette::ToolTipText,     QColor("#f2f2f4"));
     return p;
+}
+
+// Dump the four painted tray-menu glyphs (Capture / Settings / Update / Power)
+// at real size and enlarged, on the theme's menu background. These icons are
+// procedural, so this is the only way to inspect them without opening the tray
+// menu by hand — two of them shipped visually wrong before this existed.
+bool dumpMenuGlyphs(const QString& dir, const QString& theme, bool dark) {
+    const QColor bg   = dark ? QColor("#2b2b2e") : QColor("#ffffff");
+    const QColor icon = dark ? QColor("#c7c7cc") : QColor("#4a4a4f");
+    const int big = 72, small = 16, pad = 24, n = 4;
+    QImage img((big + pad) * n + pad, big + pad * 3 + small, QImage::Format_ARGB32_Premultiplied);
+    img.fill(bg);
+    QPainter p(&img);
+    for (int i = 0; i < n; ++i) {
+        const int x = pad + i * (big + pad);
+        p.drawPixmap(x, pad, LightGet_debugMenuGlyph(i, icon, big));
+        // real menu size underneath, centred
+        const QPixmap sm = LightGet_debugMenuGlyph(i, icon, small);
+        p.drawPixmap(x + (big - small) / 2, pad * 2 + big, sm);
+    }
+    p.end();
+    return img.save(QDir(dir).filePath(
+        QStringLiteral("current_menuglyphs_%1.png").arg(theme)), "PNG");
 }
 
 // Grab one tab of a freshly-built SettingsWindow under the given palette/theme
@@ -190,6 +219,20 @@ int runRenderDump(const QString& dir) {
     ok &= dumpOne(dir, QStringLiteral("dark"),  /*dark=*/true,  /*tab=*/0);
     ok &= dumpOne(dir, QStringLiteral("light"), /*dark=*/false, /*tab=*/1);
     ok &= dumpOne(dir, QStringLiteral("dark"),  /*dark=*/true,  /*tab=*/1);
+    for (int i = 0; i < 2; ++i) {
+        const bool dk = (i == 1);
+        QImage bgimg(420, 200, QImage::Format_ARGB32_Premultiplied);
+        bgimg.fill(dk ? QColor("#101012") : QColor("#e7e7ea"));   // desktop behind
+        QPainter pp(&bgimg);
+        const QPixmap dlg = LightGet_debugUpdateDialog(dk);
+        pp.drawPixmap((420 - dlg.width() / int(dlg.devicePixelRatio())) / 2,
+                      (200 - dlg.height() / int(dlg.devicePixelRatio())) / 2, dlg);
+        pp.end();
+        bgimg.save(QDir(dir).filePath(QStringLiteral("current_updatedialog_%1.png")
+                                          .arg(dk ? "dark" : "light")), "PNG");
+    }
+    ok &= dumpMenuGlyphs(dir, QStringLiteral("light"), /*dark=*/false);
+    ok &= dumpMenuGlyphs(dir, QStringLiteral("dark"),  /*dark=*/true);
     ok &= dumpToolbar(dir, QStringLiteral("light"), /*dark=*/false);
     ok &= dumpToolbar(dir, QStringLiteral("dark"),  /*dark=*/true);
     ok &= dumpTextPanel(dir, QStringLiteral("light"), /*dark=*/false);

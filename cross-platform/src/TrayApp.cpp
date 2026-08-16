@@ -88,30 +88,36 @@ QPixmap paintMenuGlyphPixmap(MenuGlyph kind, const QColor& color, int side) {
         break;
     }
     case MenuGlyph::Update: {
-        // Refresh/sync: a ring open at the top-right with an arrowhead on that
-        // end, plus a small downward tick inside — reads as "check for a newer
-        // version" rather than the viewfinder the Capture row uses.
+        // Refresh arrow (the ↻ shape): a ring with a gap at the TOP and a filled
+        // triangular head on the end of travel, pointing along the circle's
+        // tangent. Increasing the angle walks clockwise on screen (y grows
+        // downward), so the arc runs -40° -> 250° and the head sits at 250°
+        // (upper-left of the gap) pointing right — exactly where the eye expects
+        // a "reload" head.
         const QPointF cc = PT(12, 12);
-        const qreal rr = 7.2 * sc;
+        const qreal rr = 7.0 * sc;
+        const qreal aEndDeg = 250.0;
         QPainterPath ring;
         bool first = true;
-        for (int deg = -35; deg <= 265; deg += 5) {   // gap at the top-right
+        for (qreal deg = -40; deg <= aEndDeg; deg += 4) {
             const qreal a = deg * M_PI / 180.0;
             const QPointF pt(cc.x() + rr * std::cos(a), cc.y() + rr * std::sin(a));
             if (first) { ring.moveTo(pt); first = false; } else ring.lineTo(pt);
         }
         p.drawPath(ring);
 
-        // Arrowhead at the open end (-35°), pointing along the circle's tangent.
-        const qreal a0 = -35.0 * M_PI / 180.0;
-        const QPointF tip(cc.x() + rr * std::cos(a0), cc.y() + rr * std::sin(a0));
-        const qreal head = 3.1 * sc;
-        QPainterPath arrow;
-        arrow.moveTo(tip);
-        arrow.lineTo(tip.x() - head * 0.15, tip.y() - head);          // up
-        arrow.moveTo(tip);
-        arrow.lineTo(tip.x() + head * 0.85, tip.y() - head * 0.35);   // right
-        p.drawPath(arrow);
+        const qreal ae = aEndDeg * M_PI / 180.0;
+        const QPointF end(cc.x() + rr * std::cos(ae), cc.y() + rr * std::sin(ae));
+        const QPointF tang(-std::sin(ae), std::cos(ae));   // clockwise direction
+        const QPointF radial(std::cos(ae), std::sin(ae));  // outward from centre
+        const qreal headLen  = 3.8 * sc;
+        const qreal headHalf = 2.5 * sc;
+        QPainterPath head;
+        head.moveTo(end.x() + tang.x() * headLen,   end.y() + tang.y() * headLen);
+        head.lineTo(end.x() + radial.x() * headHalf, end.y() + radial.y() * headHalf);
+        head.lineTo(end.x() - radial.x() * headHalf, end.y() - radial.y() * headHalf);
+        head.closeSubpath();
+        p.fillPath(head, color);
         break;
     }
     case MenuGlyph::Power: {
@@ -147,6 +153,17 @@ QIcon makeMenuGlyph(MenuGlyph kind, const QColor& normalColor) {
     icon.addPixmap(white, QIcon::Active, QIcon::Off);
     return icon;
 }
+
+} // namespace  (re-opened below; the harness export needs external linkage)
+
+// Render-harness export: paint one tray-menu glyph (0=Capture 1=Settings
+// 2=Update 3=Power). Menu icons are painted, not assets, so this is the only way
+// to eyeball them offscreen — two of them shipped visually wrong before.
+QPixmap LightGet_debugMenuGlyph(int kind, const QColor& color, int side) {
+    return paintMenuGlyphPixmap(static_cast<MenuGlyph>(kind), color, side);
+}
+
+namespace {
 
 // QSS for the tray context menu, modelled on tray_menu.dc.html. The design is a
 // light-theme mockup; its tokens map straight to the light branch here, and a

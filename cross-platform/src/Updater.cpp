@@ -1,6 +1,7 @@
 #include "Updater.h"
 
 #include "Localization.h"
+#include "SettingsWindow.h"   // DesignTokens + lightgetDesignTokens
 
 #include <QApplication>
 #include <QDesktopServices>
@@ -19,7 +20,15 @@
 #include <QAbstractButton>
 #include <QProcess>
 #include <QPushButton>
-#include <QProgressDialog>
+#include <QProgressBar>
+#include <QLabel>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QPainter>
+#include <QPainterPath>
+#include <QGuiApplication>
+#include <QScreen>
+#include <QStyleHints>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
@@ -68,6 +77,123 @@ QList<int> versionParts(QString v) {
     return parts;
 }
 
+
+QString colToCss(const QColor& c) {
+    return QStringLiteral("rgba(%1,%2,%3,%4)")
+        .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha());
+}
+
+bool appIsDarkScheme() {
+    if (auto* h = QGuiApplication::styleHints())
+        if (h->colorScheme() != Qt::ColorScheme::Unknown)
+            return h->colorScheme() == Qt::ColorScheme::Dark;
+    return QGuiApplication::palette().color(QPalette::Window).lightness() < 128;
+}
+
+QString humanSize(qint64 bytes) {
+    const double mb = double(bytes) / (1024.0 * 1024.0);
+    return QStringLiteral("%1 MB").arg(mb, 0, 'f', 1);
+}
+
+// Download window drawn in the app's own design language (frameless rounded card,
+// design tokens, accent progress track) instead of the stock QProgressDialog.
+class UpdateProgressDialog : public QDialog {
+public:
+    UpdateProgressDialog(const QString& version, QWidget* parent, bool dark)
+        : QDialog(parent), m_tk(lightgetDesignTokens(dark)) {
+        setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
+        setAttribute(Qt::WA_TranslucentBackground, true);
+        setWindowModality(Qt::ApplicationModal);
+        setFixedSize(380, 152);
+
+        auto* col = new QVBoxLayout(this);
+        col->setContentsMargins(24, 22, 24, 20);
+        col->setSpacing(0);
+
+        auto* title = new QLabel(Loc::t(QStringLiteral("update.title")));
+        title->setStyleSheet(QStringLiteral("color:%1; font-size:15px; font-weight:600;")
+                                 .arg(colToCss(m_tk.text)));
+        col->addWidget(title);
+        col->addSpacing(6);
+
+        m_status = new QLabel(Loc::t(QStringLiteral("update.downloading")));
+        m_status->setStyleSheet(QStringLiteral("color:%1; font-size:12px;")
+                                    .arg(colToCss(m_tk.text2)));
+        col->addWidget(m_status);
+        col->addSpacing(16);
+
+        m_bar = new QProgressBar;
+        m_bar->setRange(0, 100);
+        m_bar->setValue(0);
+        m_bar->setTextVisible(false);
+        m_bar->setFixedHeight(8);
+        m_bar->setStyleSheet(QStringLiteral(
+            "QProgressBar { background:%1; border:none; border-radius:4px; }"
+            "QProgressBar::chunk { background:%2; border-radius:4px; }")
+            .arg(colToCss(m_tk.dark ? m_tk.controlFill : QColor("#e6e6ea")),
+                 colToCss(m_tk.accent)));
+        col->addWidget(m_bar);
+        col->addSpacing(6);
+
+        m_detail = new QLabel(QStringLiteral("%1 · %2").arg(version, QStringLiteral("—")));
+        m_detail->setStyleSheet(QStringLiteral("color:%1; font-size:11px;")
+                                    .arg(colToCss(m_tk.text3)));
+        col->addWidget(m_detail);
+        col->addStretch(1);
+
+        auto* row = new QHBoxLayout;
+        row->setContentsMargins(0, 0, 0, 0);
+        row->addStretch(1);
+        m_cancel = new QPushButton(Loc::t(QStringLiteral("update.cancel")));
+        m_cancel->setCursor(Qt::PointingHandCursor);
+        m_cancel->setFocusPolicy(Qt::NoFocus);
+        m_cancel->setStyleSheet(QStringLiteral(
+            "QPushButton { color:%1; background:%2; border:1px solid %3;"
+            " border-radius:7px; padding:6px 16px; font-size:12px; }"
+            "QPushButton:hover { color:%4; }")
+            .arg(colToCss(m_tk.text2), colToCss(m_tk.control),
+                 colToCss(m_tk.border), colToCss(m_tk.text)));
+        row->addWidget(m_cancel);
+        col->addLayout(row);
+
+        m_version = version;
+    }
+
+    QPushButton* cancelButton() const { return m_cancel; }
+
+    void setProgress(qint64 got, qint64 total) {
+        if (total > 0) {
+            m_bar->setRange(0, 100);
+            m_bar->setValue(int(got * 100 / total));
+            m_detail->setText(QStringLiteral("%1 · %2 / %3")
+                                  .arg(m_version, humanSize(got), humanSize(total)));
+        } else {
+            m_bar->setRange(0, 0);   // indeterminate until a length is known
+            m_detail->setText(QStringLiteral("%1 · %2").arg(m_version, humanSize(got)));
+        }
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QPainterPath path;
+        path.addRoundedRect(r, 12, 12);
+        p.fillPath(path, m_tk.card);
+        p.setPen(QPen(m_tk.border, 1.0));
+        p.drawPath(path);
+    }
+
+private:
+    DesignTokens m_tk;
+    QLabel* m_status = nullptr;
+    QLabel* m_detail = nullptr;
+    QProgressBar* m_bar = nullptr;
+    QPushButton* m_cancel = nullptr;
+    QString m_version;
+};
+
 // LightGet is an accessory/tray app, so a dialog it opens can end up BEHIND the
 // window the user is looking at (the same class of bug as the tray menu's first
 // click). Bring the app forward and raise the box once the modal loop starts.
@@ -82,6 +208,21 @@ void presentDialog(QDialog& box) {
 }
 
 } // namespace
+
+// Render-harness export: grab the download window with sample progress so its
+// design can be reviewed offscreen (see main.cpp --render-dump).
+QPixmap LightGet_debugUpdateDialog(bool dark) {
+    auto* hints = QGuiApplication::styleHints();
+    const Qt::ColorScheme prev = hints ? hints->colorScheme() : Qt::ColorScheme::Unknown;
+    if (hints) hints->setColorScheme(dark ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light);
+    UpdateProgressDialog dlg(QStringLiteral("1.0.9"), nullptr, dark);
+    dlg.setProgress(8ll * 1024 * 1024, 22ll * 1024 * 1024);
+    dlg.ensurePolished();
+    QApplication::processEvents();
+    const QPixmap pm = dlg.grab();
+    if (hints) hints->setColorScheme(prev);
+    return pm;
+}
 
 Updater::Updater(QObject* parent) : QObject(parent) {
     m_net = new QNetworkAccessManager(this);
@@ -207,6 +348,7 @@ void Updater::promptAndInstall(const QString& version, const QString& assetUrl,
             : pageUrl));
         return;
     }
+    m_pendingVersion = version;
     downloadAndInstall(assetUrl, assetName, parent);
 }
 
@@ -223,19 +365,14 @@ void Updater::downloadAndInstall(const QString& url, const QString& assetName,
                      QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply* reply = m_net->get(req);
 
-    QProgressDialog progress(Loc::t(QStringLiteral("update.downloading")),
-                             Loc::t(QStringLiteral("error.close")), 0, 100, parent);
-    progress.setWindowTitle(Loc::t(QStringLiteral("update.title")));
-    progress.setWindowModality(Qt::ApplicationModal);
-    progress.setMinimumDuration(0);
-    progress.setAutoClose(false);
-    progress.setValue(0);
+    UpdateProgressDialog progress(m_pendingVersion, parent, appIsDarkScheme());
+    presentDialog(progress);
+    progress.show();
 
     connect(reply, &QNetworkReply::downloadProgress, &progress,
-            [&progress](qint64 got, qint64 total) {
-                if (total > 0) progress.setValue(int(got * 100 / total));
-            });
-    connect(&progress, &QProgressDialog::canceled, reply, &QNetworkReply::abort);
+            [&progress](qint64 got, qint64 total) { progress.setProgress(got, total); });
+    connect(progress.cancelButton(), &QPushButton::clicked, reply, &QNetworkReply::abort);
+    connect(&progress, &QDialog::rejected, reply, &QNetworkReply::abort);
 
     QEventLoop loop;
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
