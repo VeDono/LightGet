@@ -637,7 +637,7 @@ private:
 // Version + edition (set as compile definitions in CMakeLists.txt). Defaults
 // keep the file self-contained if a definition is ever missing.
 #ifndef LIGHTGET_VERSION
-#define LIGHTGET_VERSION "1.0.11"
+#define LIGHTGET_VERSION "1.0.12"
 #endif
 #ifndef LIGHTGET_EDITION
 #define LIGHTGET_EDITION "Cross-platform (Qt 6)"
@@ -1563,14 +1563,17 @@ QWidget* SettingsWindow::makeToggleRow(const QString& label, QWidget* toggle,
 void SettingsWindow::scheduleThemedReload() {
     if (m_reloadScheduled) return;
     m_reloadScheduled = true;
-    // Snapshot the CURRENT theme first — it becomes the top layer of the crossfade.
-    const QPixmap before = grab();
     // Rebuilding straight away destroyed the Appearance control mid-slide, which is
     // why switching to/from Dark snapped while Auto<->Light glided: that pair
     // usually leaves the palette untouched, so no rebuild was triggered. Wait for
-    // the pill animation (240ms) to finish, then swap the UI under a fade.
-    QTimer::singleShot(260, this, [this, before]() {
+    // the pill animation (240ms) to finish, THEN swap the UI under a fade.
+    QTimer::singleShot(260, this, [this]() {
         m_reloadScheduled = false;
+        // Snapshot here, not when the change arrived: taken up front it still had
+        // the pill at its OLD position, so fading it in over the rebuilt window
+        // made the selection visibly jump back. Grabbing after the slide means the
+        // two layers differ only in colour, and the crossfade is pure colour.
+        const QPixmap before = grab();
         reloadUI();
         startThemeCrossfade(before);
     });
@@ -2039,7 +2042,16 @@ QWidget* SettingsWindow::buildGeneralTab() {
     }
 
     // --- Downscale toggle + reset ---
-    {
+    // Only meaningful where the screenshot comes back larger than the logical
+    // desktop — a Retina Mac or a scaled Windows display. On a plain 1x setup
+    // (most Windows machines at 100%) the option cannot change anything, so the
+    // row is left out rather than shown as a no-op. Checked per screen instead of
+    // per platform, so a 150% Windows laptop still gets it.
+    bool anyScaledScreen = false;
+    for (const QScreen* sc : QGuiApplication::screens()) {
+        if (sc && sc->devicePixelRatio() > 1.05) { anyScaledScreen = true; break; }
+    }
+    if (anyScaledScreen) {
         auto* tog = new ToggleSwitch(m_tk);
         tog->setChecked(s.downscaleRetina());
         connect(tog, &QAbstractButton::toggled, this, &SettingsWindow::onDownscaleToggled);
