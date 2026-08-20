@@ -15,7 +15,7 @@
 // logical size keeps it crisp; export rasterizes at points x dpr.
 //
 // PLATFORM (second genuinely OS-specific piece; backends in .cpp):
-//   - Baseline: QScreen::grabWindow(0) per screen (simple; includes cursor;
+//   - Baseline: QScreen::grabWindow(0) per screen (simple; may include the cursor;
 //     may be blocked/empty on Wayland or without macOS Screen Recording perm).
 //   - macOS (faithful): ScreenCaptureKit via native code (correct retina scale,
 //     cursor-excluded, TCC-gated). Use CGPreflight/RequestScreenCaptureAccess.
