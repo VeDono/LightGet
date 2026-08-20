@@ -14,6 +14,7 @@
 //    from GetMonitorInfo in real physical pixels, and the target is an explicit
 //    32-bpp BI_RGB top-down DIB section whose stride is exactly width*4 (32-bpp
 //    rows are inherently 4-byte aligned, so there is no padding to mis-handle).
+//    The blit excludes the mouse cursor (see the SRCCOPY note at the call).
 //
 // 2) WinNative_keyDisplayName — label a hotkey by the physical key that will be
 //    registered, using the VK code, instead of by the character the key happens to
@@ -243,9 +244,14 @@ QImage WinNative_captureScreen(QScreen* screen) {
         if (HBITMAP dib = CreateDIBSection(memDC, &bi, DIB_RGB_COLORS, &bits, nullptr, 0)) {
             if (bits) {
                 HGDIOBJ previous = SelectObject(memDC, dib);
-                // CAPTUREBLT also picks up layered / transparent windows.
+                // SRCCOPY only — deliberately NOT CAPTUREBLT: that flag forces a
+                // full screen redraw, which bakes the MOUSE CURSOR into the grab
+                // (and makes the screen flash). It exists for pre-Vista layered
+                // windows; since the DWM composites those into the desktop surface
+                // itself, a plain SRCCOPY already sees them. macOS never captured
+                // the cursor, so this also makes the platforms behave alike.
                 if (BitBlt(memDC, 0, 0, w, h, screenDC,
-                           target->rc.left, target->rc.top, SRCCOPY | CAPTUREBLT)) {
+                           target->rc.left, target->rc.top, SRCCOPY)) {
                     GdiFlush();   // make sure the GDI writes landed in `bits`
                     // 32-bpp BI_RGB is B,G,R,unused per pixel — byte-for-byte
                     // QImage::Format_RGB32. copy() detaches from the DIB memory.

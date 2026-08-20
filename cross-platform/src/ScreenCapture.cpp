@@ -19,7 +19,7 @@
 // exports at full pixel resolution (matches Swift's display.width × backingScale).
 //
 // PLATFORM BACKENDS (dispatched here; no #ifdef leaks to call sites):
-//   - Baseline (all OSes): QScreen::grabWindow(0). Simple; includes the cursor;
+//   - Baseline (all OSes): QScreen::grabWindow(0). Simple; may include the cursor;
 //     may be empty on Wayland or without macOS Screen Recording permission.
 //   - macOS (faithful) TODO: ScreenCaptureKit (SCShareableContent +
 //     SCScreenshotManager) in a .mm translation unit for retina-correct,
