@@ -29,6 +29,8 @@
 #include <QKeySequence>
 #include <QMenu>
 #include <QMessageBox>
+#include <QSettings>
+#include <QSysInfo>
 #include <QPalette>
 #include <QPainter>
 #include <QPainterPath>
@@ -298,7 +300,11 @@ void TrayApp::start() {
         QTimer::singleShot(8000, this, [this]() { checkForUpdates(true); });
 
     m_hotKey = new GlobalHotkey(this);
-    connect(m_hotKey, &GlobalHotkey::activated, this, &TrayApp::onHotkeyActivated);
+    // Queued on purpose: this fires from inside an OS input callback (a WM_HOTKEY
+    // window proc on Windows, a Carbon handler on macOS). Capturing takes far
+    // longer than such a callback may block, so hand it to the event loop.
+    connect(m_hotKey, &GlobalHotkey::activated, this, &TrayApp::onHotkeyActivated,
+            Qt::QueuedConnection);
     applyHotkey(Settings::instance().hotKeyCode(),
                 Settings::instance().hotKeyModifiers(), /*userInitiated*/ false);
 }
@@ -332,6 +338,57 @@ void TrayApp::refreshCaptureShortcutLabel() {
         Settings::instance().hotKeyDisplay()));
 }
 
+#if defined(Q_OS_WIN)
+namespace {
+
+// Windows 11 binds a bare Print Screen to the Snipping Tool at the shell level.
+// That binding is not an ordinary hotkey registration, so nothing we register can
+// displace it: our low-level hook swallows the key first and normally wins, but
+// the two are still racing over the same press, and any moment the hook is not
+// armed hands the key straight to the Snipping Tool. Switching the OS binding off
+// removes the competitor outright -- which is what other capture tools do, and
+// what the user remembers working.
+//
+// It is the user's system setting, so we only ever ASK, and only when they have
+// just chosen this key themselves. Same value the Settings app writes:
+// Settings > Accessibility > Keyboard > "Use the Print screen key to open
+// Snipping Tool" -- so they can put it back the same way.
+constexpr char kSnipKeyPath[] = "HKEY_CURRENT_USER\\Control Panel\\Keyboard";
+constexpr char kSnipKeyName[] = "PrintScreenKeyForSnippingEnabled";
+
+bool snippingKeyLikelyEnabled() {
+    // Windows 10 has no such binding; prompting there would be nonsense.
+    if (QSysInfo::productVersion() != QStringLiteral("11")) return false;
+    QSettings reg(QString::fromLatin1(kSnipKeyPath), QSettings::NativeFormat);
+    const QVariant v = reg.value(QString::fromLatin1(kSnipKeyName));
+    if (!v.isValid()) return true;    // absent on 11 == on by default
+    return v.toInt() != 0;
+}
+
+void offerToFreePrintScreen(QWidget* parent) {
+    if (!snippingKeyLikelyEnabled()) return;
+
+    QMessageBox box(parent);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(QStringLiteral("LightGet"));
+    box.setText(Loc::t(QStringLiteral("hotkey.printscreen.title")));
+    box.setInformativeText(Loc::t(QStringLiteral("hotkey.printscreen.body")));
+    QPushButton* off = box.addButton(Loc::t(QStringLiteral("hotkey.printscreen.disable")),
+                                     QMessageBox::AcceptRole);
+    box.addButton(Loc::t(QStringLiteral("hotkey.printscreen.keep")),
+                  QMessageBox::RejectRole);
+    box.setDefaultButton(off);
+    box.exec();
+    if (box.clickedButton() != static_cast<QAbstractButton*>(off)) return;
+
+    QSettings reg(QString::fromLatin1(kSnipKeyPath), QSettings::NativeFormat);
+    reg.setValue(QString::fromLatin1(kSnipKeyName), 0);
+    reg.sync();
+}
+
+} // namespace
+#endif
+
 void TrayApp::applyHotkey(uint32_t code, uint32_t mods, bool userInitiated) {
     if (!m_hotKey) return;
 
@@ -340,6 +397,13 @@ void TrayApp::applyHotkey(uint32_t code, uint32_t mods, bool userInitiated) {
         m_activeHotKeyCode = code;
         m_activeHotKeyMods = mods;
         m_activeHotKeyDisplay = Settings::instance().hotKeyDisplay();
+#if defined(Q_OS_WIN)
+        // Bare Print Screen, chosen just now: offer to take it back from the shell.
+        if (userInitiated && mods == 0
+            && code == (HotKeyCode::kWinVkFlag | 0x2C /* VK_SNAPSHOT */)) {
+            offerToFreePrintScreen(m_settings);
+        }
+#endif
         return;
     }
 

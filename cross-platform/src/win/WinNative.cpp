@@ -30,6 +30,7 @@
 #include <QtGlobal>
 
 #include <limits>
+#include <thread>
 
 #include <windows.h>
 
@@ -103,6 +104,45 @@ quint32 g_hotkeyVk = 0;
 quint32 g_hotkeyMods = 0;
 DWORD   g_lastFire = 0;
 
+// A WH_KEYBOARD_LL callback runs inside the OS input path, on the thread that
+// installed it, and it MUST return within LowLevelHooksTimeout (300 ms by default,
+// read from HKCU\Control Panel\Desktop). Overrun it and Windows SILENTLY DROPS
+// the hook:
+// no error, no callback, the key simply stops being swallowed -- and the shell's
+// own Print Screen binding takes over from then on. Taking a screenshot (grabbing
+// every monitor, building the overlay windows) is an order of magnitude slower
+// than that budget, so the hook must never do the work itself. It posts to this
+// message-only window and returns in microseconds; the capture then runs from the
+// ordinary message loop, safely outside the hook.
+constexpr UINT     kMsgHotkeyFired  = WM_APP + 0x51;
+constexpr UINT     kRearmIntervalMs = 30000;
+
+HWND g_dispatchWnd = nullptr;
+
+void rearmHotkeyHook();
+
+LRESULT CALLBACK dispatchProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
+    if (msg == kMsgHotkeyFired) {
+        if (g_hotkeyCb) g_hotkeyCb();   // the slow part, safely outside the hook
+        return 0;
+    }
+    return DefWindowProcW(h, msg, w, l);
+}
+
+HWND dispatchWindow() {
+    if (g_dispatchWnd) return g_dispatchWnd;
+    static const wchar_t kCls[] = L"LightGetHotkeyDispatch";
+    WNDCLASSEXW wc{};
+    wc.cbSize        = sizeof(wc);
+    wc.lpfnWndProc   = dispatchProc;
+    wc.hInstance     = GetModuleHandleW(nullptr);
+    wc.lpszClassName = kCls;
+    RegisterClassExW(&wc);   // a duplicate registration just fails, harmlessly
+    g_dispatchWnd = CreateWindowExW(0, kCls, kCls, 0, 0, 0, 0, 0,
+                                    HWND_MESSAGE, nullptr, wc.hInstance, nullptr);
+    return g_dispatchWnd;
+}
+
 LRESULT CALLBACK hotkeyProc(int code, WPARAM wParam, LPARAM lParam) {
     if (code == HC_ACTION && g_hotkeyCb && g_hotkeyVk != 0) {
         const auto* kb = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
@@ -113,12 +153,78 @@ LRESULT CALLBACK hotkeyProc(int code, WPARAM wParam, LPARAM lParam) {
             const DWORD now = GetTickCount();
             if (now - g_lastFire > 300) {   // debounce auto-repeat / both edges
                 g_lastFire = now;
-                g_hotkeyCb();
+                PostMessageW(g_dispatchWnd, kMsgHotkeyFired, 0, 0);
             }
             return 1;   // swallow, so e.g. the Snipping Tool does not also open
         }
     }
     return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+// Re-install the hook in place. Windows drops low-level hooks without telling
+// anybody -- on a timeout, and across some session transitions -- and there is no
+// API to ask whether ours is still alive. Re-arming on a timer costs a couple of
+// microseconds and turns a permanently dead shortcut into, at worst, one missed
+// press. The callback and key stay put; only the OS registration is renewed.
+// Runs ON the hook thread: a hook is owned by the thread that installed it.
+void rearmHotkeyHook() {
+    if (!g_hotkeyCb || g_hotkeyVk == 0) return;
+    if (g_hotkeyHook) { UnhookWindowsHookEx(g_hotkeyHook); g_hotkeyHook = nullptr; }
+    g_hotkeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, hotkeyProc,
+                                     GetModuleHandleW(nullptr), 0);
+}
+
+// --- the hook's own thread --------------------------------------------------
+// The hook lives on a thread of its own, which does nothing but pump messages.
+// That matters because the timeout above is charged against the thread that owns
+// the hook: were it the GUI thread, every moment that thread spends NOT pumping
+// -- taking the screenshot, building the overlay, painting -- would count against
+// the 300 ms, and a second press during a capture could kill the shortcut. This
+// thread is never busy, so it always answers instantly no matter what the rest of
+// the app is doing. It only posts to the GUI thread's dispatch window; all real
+// work still happens over there.
+std::thread* g_hookThread   = nullptr;
+DWORD        g_hookThreadId = 0;
+HANDLE       g_hookReady    = nullptr;
+bool         g_hookOk       = false;
+
+void hookThreadMain() {
+    // Force the message queue into existence before anyone may PostThreadMessage.
+    MSG probe;
+    PeekMessageW(&probe, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+    g_hookThreadId = GetCurrentThreadId();
+
+    g_hotkeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, hotkeyProc,
+                                     GetModuleHandleW(nullptr), 0);
+    g_hookOk = (g_hotkeyHook != nullptr);
+    SetEvent(g_hookReady);              // unblock the installer either way
+    if (!g_hookOk) return;
+
+    // Thread timer (no window): WM_TIMER lands straight in this loop. A window-less
+    // SetTimer ignores the id argument and RETURNS the one to kill it with.
+    const UINT_PTR timer = SetTimer(nullptr, 0, kRearmIntervalMs, nullptr);
+
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (msg.message == WM_TIMER) rearmHotkeyHook();
+    }
+
+    if (timer) KillTimer(nullptr, timer);
+    if (g_hotkeyHook) { UnhookWindowsHookEx(g_hotkeyHook); g_hotkeyHook = nullptr; }
+}
+
+void stopHookThread() {
+    if (!g_hookThread) return;
+    if (g_hookThreadId) {
+        PostThreadMessageW(g_hookThreadId, WM_QUIT, 0, 0);
+        if (g_hookThread->joinable()) g_hookThread->join();
+    } else if (g_hookThread->joinable()) {
+        g_hookThread->detach();   // never reached its loop -- don't hang on it
+    }
+    delete g_hookThread;
+    g_hookThread   = nullptr;
+    g_hookThreadId = 0;
+    if (g_hookReady) { CloseHandle(g_hookReady); g_hookReady = nullptr; }
 }
 
 // Keys whose scan code needs the "extended" lParam bit for GetKeyNameText.
@@ -173,18 +279,27 @@ void WinNative_endKeyCapture() {
 bool WinNative_installHotkeyHook(quint32 vk, quint32 mods, void (*cb)()) {
     WinNative_removeHotkeyHook();
     if (vk == 0 || !cb) return false;
+    if (!dispatchWindow()) return false;
     g_hotkeyVk = vk;
     g_hotkeyMods = mods;
     g_hotkeyCb = cb;
     g_lastFire = 0;
-    g_hotkeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, hotkeyProc,
-                                     GetModuleHandleW(nullptr), 0);
-    if (!g_hotkeyHook) { g_hotkeyCb = nullptr; g_hotkeyVk = 0; return false; }
+
+    g_hookOk    = false;
+    g_hookReady = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_hookThread = new std::thread(hookThreadMain);
+    if (g_hookReady) WaitForSingleObject(g_hookReady, 3000);
+    if (!g_hookOk) {   // SetWindowsHookEx failed -- report it like before
+        stopHookThread();
+        g_hotkeyCb = nullptr;
+        g_hotkeyVk = 0;
+        return false;
+    }
     return true;
 }
 
 void WinNative_removeHotkeyHook() {
-    if (g_hotkeyHook) { UnhookWindowsHookEx(g_hotkeyHook); g_hotkeyHook = nullptr; }
+    stopHookThread();   // unhooks on the thread that owns the hook
     g_hotkeyCb = nullptr;
     g_hotkeyVk = 0;
     g_hotkeyMods = 0;

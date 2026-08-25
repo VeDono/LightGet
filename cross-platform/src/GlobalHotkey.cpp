@@ -288,27 +288,37 @@ bool GlobalHotkey::registerHotkey(uint32_t carbonKeyCode, uint32_t carbonModifie
     HWND hwnd = hotkeyMessageWindow();
     if (!hwnd) { m_registered = false; return false; }
 
-    winRegistry().insert(d->id, this);
-    if (!::RegisterHotKey(hwnd, d->id, mods, vk)) {
-        winRegistry().remove(d->id);
-        // The combo is owned by another process — most commonly PrintScreen, which
-        // Windows 11 binds to the Snipping Tool by default. Fall back to a
-        // low-level keyboard hook, which sees the key first and swallows it, so the
-        // shortcut the user picked actually works instead of silently doing nothing.
-        g_hookOwner = this;
-        if (WinNative_installHotkeyHook(vk, carbonModsToHookMask(carbonModifiers),
-                                        &hotkeyHookFired)) {
-            d->usingHook = true;
+    // PrintScreen is a special case, and RegisterHotKey is the WRONG tool for it.
+    // Windows 11 binds the key to the Snipping Tool through the shell, not through
+    // an ordinary hotkey registration — so our RegisterHotKey can SUCCEED and the
+    // Snipping Tool still opens on the very same press. Winning that registration
+    // does not win the key. Only a low-level hook sees the keystroke before the
+    // shell and can swallow it, so for this one key the hook is the primary path
+    // rather than the fallback.
+    const bool preferHook = (vk == VK_SNAPSHOT);
+
+    if (!preferHook) {
+        winRegistry().insert(d->id, this);
+        if (::RegisterHotKey(hwnd, d->id, mods, vk)) {
+            d->active = true;
             m_registered = true;
             return true;
         }
-        g_hookOwner = nullptr;
-        m_registered = false;
-        return false;
+        // Owned by another process. Fall through to the hook, which still has a
+        // chance: it sits ahead of whoever holds the registration.
+        winRegistry().remove(d->id);
     }
-    d->active = true;
-    m_registered = true;
-    return true;
+
+    g_hookOwner = this;
+    if (WinNative_installHotkeyHook(vk, carbonModsToHookMask(carbonModifiers),
+                                    &hotkeyHookFired)) {
+        d->usingHook = true;
+        m_registered = true;
+        return true;
+    }
+    g_hookOwner = nullptr;
+    m_registered = false;
+    return false;
 }
 
 bool GlobalHotkey::reregister(uint32_t carbonKeyCode, uint32_t carbonModifiers) {
