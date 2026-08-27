@@ -194,6 +194,12 @@ void hookThreadMain() {
     PeekMessageW(&probe, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
     g_hookThreadId = GetCurrentThreadId();
 
+    // This thread only waits for a keystroke and forwards it, so it can afford the
+    // top priority -- and it needs it. The hook's 300 ms budget is wall-clock, so
+    // a game saturating the CPU can starve this thread until Windows gives up on
+    // the hook and drops it. Costs nothing: the thread is asleep in GetMessage.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
     g_hotkeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, hotkeyProc,
                                      GetModuleHandleW(nullptr), 0);
     g_hookOk = (g_hotkeyHook != nullptr);
@@ -434,4 +440,30 @@ QString WinNative_keyDisplayName(quint32 vk) {
     // Last resort: printable ASCII VKs are their own character ('A'..'Z', '0'..'9').
     if (vk >= 0x30 && vk <= 0x5A) return QString(QChar(ushort(vk)));
     return QString();
+}
+
+// Windows parks background processes under EcoQoS: a reduced clock, and on hybrid
+// CPUs a preference for the efficiency cores. A tray app with no visible window is
+// exactly the profile that gets throttled, so when a game has the foreground, our
+// shortcut and overlay come back sluggish. Opting out does not ask for more CPU --
+// only to be clocked normally on the occasions we do run.
+void WinNative_optOutOfPowerThrottling() {
+#ifdef PROCESS_POWER_THROTTLING_CURRENT_VERSION
+    PROCESS_POWER_THROTTLING_STATE st{};
+    st.Version     = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    st.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    st.StateMask   = 0;   // 0 for the masked control == throttling off
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling,
+                          &st, sizeof(st));
+#endif
+}
+
+// Lift the process while a capture is actually on screen, and put it straight
+// back afterwards. The grab and the overlay have to feel instant, and against a
+// game's threads a normal-priority background process waits its turn. Deliberately
+// ABOVE_NORMAL and not HIGH: enough to be scheduled promptly, not enough to make
+// the machine stutter, and it lasts only as long as the overlay does.
+void WinNative_setCaptureBoost(bool on) {
+    SetPriorityClass(GetCurrentProcess(),
+                     on ? ABOVE_NORMAL_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS);
 }

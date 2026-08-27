@@ -263,6 +263,12 @@ int runRenderDump(const QString& dir) {
 
 } // namespace
 
+#if defined(Q_OS_WIN)
+// Implemented in win/WinNative.cpp. File scope on purpose -- an extern inside an
+// anonymous namespace gets internal linkage and fails to link.
+extern void WinNative_optOutOfPowerThrottling();
+#endif
+
 int main(int argc, char** argv) {
     // Identify the QSettings store BEFORE anything reads Settings. These static
     // setters are valid without a QApplication and give QSettings a real backing
@@ -291,6 +297,12 @@ int main(int argc, char** argv) {
 
     // Tray-only app: never quit just because a transient window closed.
     QApplication::setQuitOnLastWindowClosed(false);
+
+#if defined(Q_OS_WIN)
+    // Tell Windows not to park us at a reduced clock for being a background app;
+    // see the note in WinNative.cpp. Harmless no-op before Windows 10 1709.
+    WinNative_optOutOfPowerThrottling();
+#endif
 
     // Apply the saved Appearance preference to the app color scheme (Qt 6.8):
     // "light"/"dark" force it; "auto" follows the OS. Mirrors what the Settings
