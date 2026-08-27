@@ -330,6 +330,17 @@ void TrayApp::checkForUpdates(bool silent) {
 }
 
 void TrayApp::refreshCaptureShortcutLabel() {
+    // Windows shows this on hover over the tray icon -- including inside the
+    // overflow flyout, where an icon WITHOUT a tooltip is just a blank square with
+    // no way to tell what it is. Carries the current shortcut too, so the flyout
+    // answers "what is this, and how do I trigger it" at a glance. macOS status
+    // items have no tooltip, so this is simply inert there.
+    if (m_tray) {
+        const QString sc = Settings::instance().hotKeyDisplay();
+        m_tray->setToolTip(sc.isEmpty()
+                               ? QStringLiteral("LightGet")
+                               : QStringLiteral("LightGet \u2014 %1").arg(sc));
+    }
     if (!m_captureAction) return;
     // Keep the '\t' right-aligned-hint form so the combo stays in the shortcut
     // column (see buildMenu()).
@@ -443,6 +454,7 @@ void TrayApp::setupTray() {
     m_tray = new QSystemTrayIcon(this);
     applyBarIcon();
     m_menu = buildMenu();
+    refreshCaptureShortcutLabel();   // also seeds the tray tooltip
     // No setContextMenu(): we pop m_menu MANUALLY in onTrayActivated so we can
     // center it horizontally under the icon. The native context menu can't be
     // repositioned (the OS anchors it to the status item).

@@ -32,6 +32,7 @@
 #include <QHBoxLayout>
 #include <QGridLayout>
 #include <QLabel>
+#include <QAbstractButton>
 #include <QPushButton>
 #include <QToolButton>
 #include <QComboBox>
@@ -1737,6 +1738,49 @@ void SettingsWindow::buildUI() {
     root->addWidget(body, 1);
 }
 
+namespace {
+
+// The close dot, painted rather than styled, so it can show an "x" inside itself
+// on hover the way the macOS traffic lights do. A bare coloured circle gives no
+// hint of what it does until you click it; the glyph is the affordance. QSS alone
+// can't do this -- it has no way to draw a mark, and an icon swap on hover would
+// have to ship two pixmaps per theme.
+class CloseDot : public QAbstractButton {
+public:
+    explicit CloseDot(QWidget* parent = nullptr) : QAbstractButton(parent) {
+        setFixedSize(12, 12);
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::NoFocus);
+    }
+
+protected:
+    void enterEvent(QEnterEvent*) override { update(); }
+    void leaveEvent(QEvent*) override { update(); }
+
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const bool hot = underMouse();
+
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(hot ? "#ff4438" : "#ff5f57"));
+        p.drawEllipse(rect());
+        if (!hot) return;
+
+        // Dark red mark, inset off the rim, with round caps -- matches the weight
+        // of the system glyph rather than a hairline cross.
+        QPen pen(QColor(120, 12, 8, 205));
+        pen.setWidthF(1.15);
+        pen.setCapStyle(Qt::RoundCap);
+        p.setPen(pen);
+        const qreal in = width() * 0.33;
+        p.drawLine(QPointF(in, in), QPointF(width() - in, height() - in));
+        p.drawLine(QPointF(width() - in, in), QPointF(in, height() - in));
+    }
+};
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 // Custom title bar — 46px chrome: 3 traffic-light dots + centered title
 // ---------------------------------------------------------------------------
@@ -1763,14 +1807,9 @@ QWidget* SettingsWindow::buildTitleBar() {
     // platforms' window conventions. The yellow (minimize) and green (zoom) dots
     // are dropped — this is a fixed-size accessory panel, so they'd be inert.
     auto addCloseDot = [this, h]() {
-        auto* dot = new QPushButton;
-        dot->setFixedSize(12, 12);
-        dot->setCursor(Qt::PointingHandCursor);
-        dot->setFocusPolicy(Qt::NoFocus);
-        dot->setStyleSheet(QStringLiteral(
-            "QPushButton { background-color:#ff5f57; border:none; border-radius:6px; }"
-            "QPushButton:hover { background-color:#ff4438; }"));
-        connect(dot, &QPushButton::clicked, this, &QWidget::close);
+        auto* dot = new CloseDot;
+        dot->setToolTip(Loc::t(QStringLiteral("settings.close")));
+        connect(dot, &QAbstractButton::clicked, this, &QWidget::close);
         h->addWidget(dot, 0, Qt::AlignVCenter);
     };
 
