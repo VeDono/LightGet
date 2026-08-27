@@ -71,10 +71,18 @@
 // background, and a small gap in the middle so the target pixel stays visible.
 // ---------------------------------------------------------------------------
 QCursor makeCrosshairCursor(qreal dpr) {
-    const int side = 26;                       // logical size
-    const qreal c = side / 2.0;                // centre
-    const qreal gap = 3.5;                     // clear hole around the hot spot
-    const qreal arm = c - 1.0;
+    // A rebuild of the macOS selection crosshair, measured off the system cursor
+    // itself: a 1px dark core, a 1px white halo either side of it, and a soft
+    // shadow falling away outside that -- unbroken through the middle, with no gap
+    // at the hot spot. The whole cross is ~13.5px inside a 24px box, which is what
+    // makes it read as precise rather than bulky.
+    //
+    // Rebuilt procedurally rather than shipped as Apple's bitmap: it stays crisp at
+    // every Windows scaling factor (100/125/150/200%) instead of being resampled
+    // from one 24px image, and Apple's artwork is not ours to redistribute.
+    const int   side = 24;     // logical box, same as the system cursor
+    const qreal c    = 11.5;   // centre; the hot spot lands on pixel 11
+    const qreal arm  = 6.75;   // half-length of the opaque cross
 
     QPixmap pm(int(std::ceil(side * dpr)), int(std::ceil(side * dpr)));
     pm.setDevicePixelRatio(dpr);
@@ -82,19 +90,23 @@ QCursor makeCrosshairCursor(qreal dpr) {
 
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, false);   // crisp 1px lines
-    const QList<QLineF> arms = {
-        QLineF(c, c - gap, c, c - arm),   // up
-        QLineF(c, c + gap, c, c + arm),   // down
-        QLineF(c - gap, c, c - arm, c),   // left
-        QLineF(c + gap, c, c + arm, c),   // right
-    };
-    // Halo first, then the line on top.
-    p.setPen(QPen(QColor(255, 255, 255, 200), 3.0));
-    for (const QLineF& l : arms) p.drawLine(l);
-    p.setPen(QPen(QColor(0, 0, 0, 235), 1.0));
-    for (const QLineF& l : arms) p.drawLine(l);
-    p.end();
 
+    const QList<QLineF> arms = {
+        QLineF(c, c - arm, c, c + arm),   // vertical, unbroken through the centre
+        QLineF(c - arm, c, c + arm, c),   // horizontal
+    };
+    auto stroke = [&](const QColor& col, qreal w) {
+        p.setPen(QPen(col, w));
+        for (const QLineF& l : arms) p.drawLine(l);
+    };
+
+    // Painted outside-in, so each pass sits on top of the wider one beneath it.
+    stroke(QColor(0, 0, 0, 12), 7.0);       // shadow, faintest and widest
+    stroke(QColor(0, 0, 0, 16), 5.0);       // shadow ramping up to the halo
+    stroke(QColor(255, 255, 255), 3.0);     // white halo
+    stroke(QColor(35, 32, 32), 1.0);        // dark core
+
+    p.end();
     return QCursor(pm, int(c), int(c));
 }
 

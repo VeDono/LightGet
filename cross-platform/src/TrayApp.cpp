@@ -450,6 +450,23 @@ void TrayApp::applyHotkey(uint32_t code, uint32_t mods, bool userInitiated) {
 // Tray + menu
 // ===========================================================================
 
+#if defined(Q_OS_WIN)
+// Implemented in win/WinNative.cpp. MUST be declared at file scope: inside an
+// anonymous namespace it would get internal linkage and fail to link.
+extern void WinNative_setCaptureBoost(bool on);
+#endif
+
+namespace {
+// Raise the process only while a capture is actually on screen, never at rest.
+inline void captureBoost(bool on) {
+#if defined(Q_OS_WIN)
+    WinNative_setCaptureBoost(on);
+#else
+    Q_UNUSED(on);
+#endif
+}
+} // namespace
+
 void TrayApp::setupTray() {
     m_tray = new QSystemTrayIcon(this);
     applyBarIcon();
@@ -722,6 +739,7 @@ void TrayApp::startCapture() {
     }
 
     m_isCapturing = true;
+    captureBoost(true);
 
     // Scope an explicit autorelease pool over the grab + overlay construction so
     // per-capture Cocoa litter (CGImages etc.) dies when this function returns.
@@ -735,6 +753,7 @@ void TrayApp::startCapture() {
 
     if (err != ScreenCaptureError::None || shots.empty()) {
         m_isCapturing = false;
+        captureBoost(false);
         presentCaptureError();
         return;
     }
@@ -810,6 +829,7 @@ void TrayApp::startCapture() {
     // Overlays are up; commit the state transition: overlay != nil, not capturing.
     m_overlayShown = true;
     m_isCapturing = false;
+    captureBoost(false);
 }
 
 void TrayApp::onCaptureFinished() {
@@ -817,6 +837,7 @@ void TrayApp::onCaptureFinished() {
     // both guards cleared.
     m_overlayShown = false;
     m_isCapturing = false;
+    captureBoost(false);
 }
 
 void TrayApp::presentCaptureError() {
