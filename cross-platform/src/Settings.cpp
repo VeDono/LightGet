@@ -21,6 +21,7 @@ constexpr char kDownscale[]     = "downscaleRetina";
 constexpr char kAnimatedDim[]   = "animatedDim";
 constexpr char kLanguage[]      = "language";
 constexpr char kAppearance[]    = "appearance";
+constexpr char kSkipVersion[]   = "skippedUpdateVersion";
 constexpr char kSaveFolder[]    = "saveFolder";
 constexpr char kBarIcon[]       = "barIcon";
 constexpr char kBarIconCustom[] = "barIconCustom";
@@ -167,6 +168,13 @@ QString Settings::appearance() const {
 
 void Settings::setAppearance(const QString& v) {
     m_s.setValue(kAppearance, v);
+}
+
+QString Settings::skippedUpdateVersion() const {
+    return m_s.value(kSkipVersion).toString();
+}
+void Settings::setSkippedUpdateVersion(const QString& v) {
+    m_s.setValue(kSkipVersion, v);
 }
 
 std::optional<QString> Settings::saveFolderPath() const {

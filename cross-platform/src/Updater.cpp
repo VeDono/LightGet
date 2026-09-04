@@ -1,6 +1,7 @@
 #include "Updater.h"
 
 #include "Localization.h"
+#include "Settings.h"
 #include "SettingsWindow.h"   // DesignTokens + lightgetDesignTokens
 
 #include <QApplication>
@@ -386,6 +387,14 @@ void Updater::evaluate(const QString& tag, const QString& assetUrl,
         emit finished();
         return;
     }
+    // Skipped release: stay quiet on the automatic check, but only until something
+    // NEWER than the skipped one appears. A manual check ignores this entirely.
+    const QString skipped = Settings::instance().skippedUpdateVersion();
+    if (m_silent && !skipped.isEmpty() && !isNewerVersion(tag, skipped)) {
+        emit finished();
+        return;
+    }
+
     promptAndInstall(tag, assetUrl, assetName, pageUrl, m_parent);
     emit finished();
 }
@@ -409,11 +418,22 @@ void Updater::promptAndInstall(const QString& version, const QString& assetUrl,
         canSelfInstall ? Loc::t(QStringLiteral("update.install"))
                        : Loc::t(QStringLiteral("update.openPage")),
         QMessageBox::AcceptRole);
+    // "Skip this version" silences the AUTOMATIC check for this release only.
+    // Anything newer still announces itself, and an explicit "Check for Updates"
+    // offers this one again -- so the choice can always be taken back.
+    QPushButton* skip = box.addButton(Loc::t(QStringLiteral("update.skip")),
+                                      QMessageBox::ActionRole);
     box.addButton(Loc::t(QStringLiteral("update.later")), QMessageBox::RejectRole);
     box.setDefaultButton(primary);
     presentDialog(box);
     box.exec();
-    if (box.clickedButton() != static_cast<QAbstractButton*>(primary)) return;
+
+    QAbstractButton* chosen = box.clickedButton();
+    if (chosen == static_cast<QAbstractButton*>(skip)) {
+        Settings::instance().setSkippedUpdateVersion(version);
+        return;
+    }
+    if (chosen != static_cast<QAbstractButton*>(primary)) return;
 
     if (!canSelfInstall) {
         QDesktopServices::openUrl(QUrl(pageUrl.isEmpty()
@@ -460,7 +480,7 @@ void Updater::downloadAndInstall(const QString& url, const QString& assetName,
         if (reply->error() != QNetworkReply::OperationCanceledError) {
             QMessageBox::warning(parent, Loc::t(QStringLiteral("update.title")),
                                  Loc::t(QStringLiteral("update.failed"))
-                                     .arg(QStringLiteral("download failed")));
+                                     .arg(Loc::t(QStringLiteral("update.downloadFailed"))));
         }
         return;
     }

@@ -109,6 +109,12 @@ public:
     QString appearance() const;              // default "auto"
     void setAppearance(const QString& v);
 
+    // A release the user chose to skip. While the newest release on GitHub is not
+    // newer than this, the automatic check stays quiet; an explicit "Check for
+    // Updates" still offers it, so the choice is never a dead end.
+    QString skippedUpdateVersion() const;            // empty = nothing skipped
+    void setSkippedUpdateVersion(const QString& v);
+
     std::optional<QString> saveFolderPath() const;   // nullopt = ask every time
     void setSaveFolderPath(const std::optional<QString>& v); // nullopt removes key
 
