@@ -131,7 +131,13 @@ public:
         setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
         setAttribute(Qt::WA_TranslucentBackground, true);
         setWindowModality(Qt::ApplicationModal);
-        setFixedSize(380, 152);
+        // The WIDTH is part of the design; the height deliberately is not. This card
+        // is built out of text, and text is taller on Windows than on macOS, so
+        // pinning both dimensions squeezed the Cancel button below its own minimum
+        // and clipped the bottom of its label. Ask the layout what it needs instead,
+        // keeping the original height as a floor so the macOS proportions are
+        // unchanged.
+        setFixedWidth(380);
 
         auto* col = new QVBoxLayout(this);
         col->setContentsMargins(24, 22, 24, 20);
@@ -184,6 +190,9 @@ public:
         col->addLayout(row);
 
         m_version = version;
+
+        col->activate();
+        setFixedHeight(qMax(152, sizeHint().height()));
     }
 
     QPushButton* cancelButton() const { return m_cancel; }
