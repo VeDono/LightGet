@@ -2292,18 +2292,20 @@ QWidget* SettingsWindow::buildFeaturesTab() {
                                [](bool on){ Settings::instance().setTextFontSizeEnabled(on); });
         });
 
-        // Bold — "Bold" in heavy weight.
+        // Bold — the neutral "Aa" specimen in heavy weight. Deliberately not the
+        // word "Bold": the row label beside it is already translated, so an English
+        // word here would be the one untranslated thing on the page.
         makers.push_back([this, &s, makeTextRow]() {
-            auto* lbl = new QLabel(QStringLiteral("Bold"));
+            auto* lbl = new QLabel(QStringLiteral("Aa"));
             lbl->setStyleSheet(QStringLiteral(
                 "color:%1; font-weight:800; font-size:14px;").arg(colCss(m_tk.text)));
             return makeTextRow("features.textBold", s.textBoldEnabled(), lbl,
                                [](bool on){ Settings::instance().setTextBoldEnabled(on); });
         });
 
-        // Italic — "Italic" slanted.
+        // Italic — the same specimen, slanted.
         makers.push_back([this, &s, makeTextRow]() {
-            auto* lbl = new QLabel(QStringLiteral("Italic"));
+            auto* lbl = new QLabel(QStringLiteral("Aa"));
             lbl->setStyleSheet(QStringLiteral(
                 "color:%1; font-style:italic; font-weight:500; font-size:14px;")
                 .arg(colCss(m_tk.text)));
@@ -2311,9 +2313,9 @@ QWidget* SettingsWindow::buildFeaturesTab() {
                                [](bool on){ Settings::instance().setTextItalicEnabled(on); });
         });
 
-        // Underline — "Under" underlined.
+        // Underline — the same specimen, underlined.
         makers.push_back([this, &s, makeTextRow]() {
-            auto* lbl = new QLabel(QStringLiteral("Under"));
+            auto* lbl = new QLabel(QStringLiteral("Aa"));
             lbl->setStyleSheet(QStringLiteral(
                 "color:%1; text-decoration:underline; font-weight:500; font-size:14px;")
                 .arg(colCss(m_tk.text)));
