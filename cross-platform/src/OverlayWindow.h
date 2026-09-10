@@ -268,6 +268,7 @@ private:
     // Built lazily on first paint / when the widget size changes; carries the
     // device pixel ratio so it stays sharp on Retina.
     QPixmap m_backdrop;
+    bool m_painted = false;   // tracing: has this overlay painted once?
     void ensureBackdrop();   // (re)build m_backdrop if missing or stale
 
     // ----- Dirty-rect drag optimization -----

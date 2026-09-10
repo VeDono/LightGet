@@ -16,6 +16,7 @@
 #include "ScreenCapture.h"
 #include "Updater.h"
 #include "Settings.h"
+#include "Trace.h"
 #include "SettingsWindow.h"
 
 #include <QAction>
@@ -32,6 +33,9 @@
 #include <QSettings>
 #include <QSysInfo>
 #include <QPalette>
+#include <QClipboard>
+#include <QWidget>
+#include <QImageWriter>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
@@ -248,6 +252,69 @@ bool appIsDark() {
 // Construction / lifecycle
 // ===========================================================================
 
+#if defined(Q_OS_WIN)
+// Implemented in win/WinNative.cpp and OverlayWindow.cpp. File scope on purpose:
+// an extern inside an anonymous namespace gets internal linkage and fails to link.
+extern void WinNative_warmUpCapture();
+extern void LightGet_warmOverlayCursors();
+
+namespace {
+
+// Everything the first capture would otherwise pay for, paid here instead, at a
+// moment of our choosing.
+//
+// A tray app sits idle for hours. By the time the shortcut is pressed — typically
+// with a game holding the whole machine — none of this has ever run in the
+// process, so the first capture pays every first-use cost at the worst possible
+// time, which is why it takes seconds while the next one is instant. Nothing here
+// is a trick: it is the same code the capture path runs, run early.
+//
+// Windows only. That is where the slow first capture was reported, and warming a
+// stack that already behaves costs risk for no reward.
+void warmUpCaptureStack() {
+    LG_TRACE("warm-up");
+
+    // 1. The text stack. Qt builds its font database and initialises DirectWrite on
+    //    the first glyph drawn, and that is comfortably the largest single
+    //    first-use cost in the process.
+    {
+        QPixmap pm(64, 24);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setRenderHint(QPainter::TextAntialiasing, true);
+        p.drawText(pm.rect(), Qt::AlignCenter, QStringLiteral("Aa"));
+    }
+
+    // 2. A frameless translucent top-level, flagged exactly like an overlay. This
+    //    is what makes Qt create its first native window and the compositor set up
+    //    a layered surface. 1x1 and never shown, so nothing appears on screen.
+    {
+        QWidget probe(nullptr, Qt::FramelessWindowHint
+                                   | Qt::WindowStaysOnTopHint | Qt::Tool);
+        probe.setAttribute(Qt::WA_TranslucentBackground, true);
+        probe.setAttribute(Qt::WA_NoSystemBackground, true);
+        probe.resize(1, 1);
+        (void)probe.winId();   // realise the platform window
+    }
+
+    // 3. The crosshair is cached per device pixel ratio; build the ones in use.
+    LightGet_warmOverlayCursors();
+
+    // 4. The PNG encoder lives in a plugin that is not loaded until the first save.
+    (void)QImageWriter::supportedImageFormats();
+
+    // 5. First clipboard access initialises OLE. The object is created; the
+    //    clipboard's contents are neither read nor altered.
+    (void)QGuiApplication::clipboard();
+
+    // 6. The GDI capture path, with a 1x1 blit — see the note in WinNative.cpp.
+    WinNative_warmUpCapture();
+}
+
+}  // namespace
+#endif
+
 TrayApp::TrayApp(QObject* parent) : QObject(parent) {}
 
 TrayApp::~TrayApp() {
@@ -293,6 +360,12 @@ void TrayApp::start() {
     QTimer::singleShot(4000, this, [this]() {
         if (!QSystemTrayIcon::isSystemTrayAvailable()) openSettings();
     });
+
+#if defined(Q_OS_WIN)
+    // Early, but after the tray is up: the point is to be finished long before the
+    // user reaches for the shortcut, without competing with startup itself.
+    QTimer::singleShot(2000, this, []() { warmUpCaptureStack(); });
+#endif
 
     // Automatic update check shortly after launch (opt-out in Settings). Delayed
     // so it never competes with startup work, and silent unless there IS an update.
@@ -733,6 +806,7 @@ void TrayApp::startCapture() {
 
     m_isCapturing = true;
     captureBoost(true);
+    LG_TRACE("capture");
 
     // Scope an explicit autorelease pool over the grab + overlay construction so
     // per-capture Cocoa litter (CGImages etc.) dies when this function returns.
@@ -742,7 +816,11 @@ void TrayApp::startCapture() {
     // overlay (dim shield) is shown, so neither the dim nor annotations leak
     // into the grab.
     ScreenCaptureError err = ScreenCaptureError::None;
-    std::vector<CapturedScreen> shots = ScreenCapture::captureAllDisplays(err);
+    std::vector<CapturedScreen> shots;
+    {
+        LG_TRACE("grab pixels");
+        shots = ScreenCapture::captureAllDisplays(err);
+    }
 
     if (err != ScreenCaptureError::None || shots.empty()) {
         m_isCapturing = false;
@@ -756,6 +834,7 @@ void TrayApp::startCapture() {
     recordPreviousApp();
 
     // Create one overlay per captured screen, placed at that screen's geometry.
+    Trace::Scope overlayScope("build overlays");
     for (const CapturedScreen& cap : shots) {
         QScreen* screen = cap.screen;
         OverlayWindow* overlay = new OverlayWindow(cap.image, screen);
@@ -770,6 +849,8 @@ void TrayApp::startCapture() {
         m_overlays.append(overlay);
     }
 
+    overlayScope.mark(QStringLiteral("constructed %1").arg(m_overlays.size()));
+
     // Show + raise all overlays, then apply the native shield level once mapped.
     const bool animateDim = Settings::instance().animatedDim();
     for (OverlayWindow* w : m_overlays) {
@@ -779,6 +860,8 @@ void TrayApp::startCapture() {
         // Optional smooth fade-in of the dim layer (default OFF -> instant dim).
         if (animateDim) w->startDimFadeIn();
     }
+
+    overlayScope.mark(QStringLiteral("shown"));
 
     // Keyboard focus goes to the overlay under the cursor (Esc / ⌘C etc.).
     const QPoint mouse = QCursor::pos();
@@ -822,7 +905,12 @@ void TrayApp::startCapture() {
     // Overlays are up; commit the state transition: overlay != nil, not capturing.
     m_overlayShown = true;
     m_isCapturing = false;
-    captureBoost(false);
+    // NOTE: the boost is deliberately NOT dropped here. The overlay exists but has
+    // not painted yet, and that first paint — backing store, backdrop — is the
+    // heaviest frame of the whole gesture. Releasing it now handed the machine back
+    // to the game exactly one instant too early. closeOverlays() drops it, so it
+    // lasts precisely as long as a capture is on screen, which is what the comment
+    // on WinNative_setCaptureBoost has always claimed.
 }
 
 void TrayApp::onCaptureFinished() {

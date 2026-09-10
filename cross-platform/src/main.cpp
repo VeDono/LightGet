@@ -10,6 +10,8 @@
 // settings window (the only top-level we ever show) would terminate the app.
 
 #include "Settings.h"
+#include <QScreen>
+#include "Trace.h"
 #include "TrayApp.h"
 #include "SettingsWindow.h"
 #include "Updater.h"
@@ -297,6 +299,22 @@ int main(int argc, char** argv) {
 
     // Tray-only app: never quit just because a transient window closed.
     QApplication::setQuitOnLastWindowClosed(false);
+
+    // Tracing context. Screen count, pixel size and scale factor decide how much
+    // memory a capture touches, so the timings below are unreadable without them.
+    if (Trace::enabled()) {
+        Trace::log(QStringLiteral("LightGet %1").arg(QStringLiteral(LIGHTGET_VERSION)));
+        for (QScreen* sc : QGuiApplication::screens()) {
+            if (!sc) continue;
+            const QSize g = sc->geometry().size();
+            const qreal r = sc->devicePixelRatio();
+            Trace::log(QStringLiteral("screen %1: %2x%3 @%4x  => %5 MB per buffer")
+                           .arg(sc->name())
+                           .arg(g.width()).arg(g.height()).arg(r)
+                           .arg(double(g.width() * r) * double(g.height() * r) * 4.0
+                                    / (1024.0 * 1024.0), 0, 'f', 1));
+        }
+    }
 
 #if defined(Q_OS_WIN)
     // Tell Windows not to park us at a reduced clock for being a background app;
