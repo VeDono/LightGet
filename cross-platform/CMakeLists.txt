@@ -70,6 +70,7 @@ set(LIGHTGET_SOURCES
     src/SettingsWindow.cpp
     src/TrayApp.cpp
     src/Updater.cpp      # GitHub-Releases update check + self-install
+    src/Trace.cpp        # opt-in phase timing (LIGHTGET_TRACE=1)
 )
 
 # Optional bundled icon/glyph assets (SF Symbol replacements). Create as needed.

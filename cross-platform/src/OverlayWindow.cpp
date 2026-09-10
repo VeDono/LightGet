@@ -9,6 +9,8 @@
 
 #include "OverlayWindow.h"
 
+#include "Trace.h"
+
 #include "Toolbar.h"
 #include "Settings.h"
 #include "Localization.h"
@@ -126,6 +128,14 @@ QCursor overlayCrosshair(qreal dpr) {
 
 // Render-harness export: the painted crosshair, so its contrast can be reviewed
 // offscreen (it only ships on Windows/Linux, where it cannot be eyeballed here).
+// Build the crosshair for every screen currently attached, so the per-DPR cursor
+// cache is populated before the first capture needs it. Called from the startup
+// warm-up; declared at file scope so the caller can reach it.
+void LightGet_warmOverlayCursors() {
+    for (QScreen* sc : QGuiApplication::screens())
+        if (sc) (void)overlayCrosshair(sc->devicePixelRatio());
+}
+
 QPixmap LightGet_debugCrosshair(qreal dpr) {
     return makeCrosshairCursor(dpr).pixmap();
 }
@@ -148,7 +158,33 @@ OverlayWindow::OverlayWindow(const QImage& screenshot, QScreen* screen, QWidget*
 #else
     setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool);
 #endif
+#if defined(Q_OS_WIN)
+    // EXPERIMENT, opt-in with LIGHTGET_OPAQUE_OVERLAY=1.
+    //
+    // This overlay is OPAQUE on Windows. paintEvent blits the captured screenshot
+    // across every damaged pixel before anything else (the same fact that makes
+    // WA_OpaquePaintEvent below safe), and the dim is painted ON TOP of that image
+    // rather than through the window; nothing on Windows reads the shield level,
+    // and nothing animates window opacity. So the desktop behind is never visible,
+    // and asking for a translucent background makes Qt build a per-pixel-alpha
+    // layered window and hand the compositor a full ARGB surface for an entire
+    // screen -- on the first show and again on every drag frame -- to blend
+    // against something that is always completely covered.
+    //
+    // Not the default yet, because dropping it has one plausible cost: the backing
+    // store starts zero-filled, so if Windows presents a frame before Qt's first
+    // paint lands, the capture could open with a black flash. That is exactly the
+    // kind of thing that needs a real Windows screen to judge, so it ships as a
+    // switch rather than a guess. If it is faster AND there is no flash, it
+    // becomes the default.
+    //
+    // macOS keeps translucency unconditionally: there the shield window really is
+    // composited by the system.
+    const bool opaqueOverlay = qgetenv("LIGHTGET_OPAQUE_OVERLAY").trimmed() == "1";
+    setAttribute(Qt::WA_TranslucentBackground, !opaqueOverlay);
+#else
     setAttribute(Qt::WA_TranslucentBackground, true);
+#endif
     setAttribute(Qt::WA_NoSystemBackground, true);
 
     // PERF: skip Qt's automatic per-frame background erase. Our paintEvent ALWAYS
@@ -394,6 +430,12 @@ std::optional<int> OverlayWindow::textAnnotationIndex(const QPointF& p) const {
 // ============================================================================
 
 void OverlayWindow::paintEvent(QPaintEvent* event) {
+    // Only the FIRST paint is timed: that is the one that pays for the backing
+    // store and the backdrop. Later frames are the drag path and would bury the
+    // interesting numbers.
+    Trace::Scope firstPaint(m_painted ? nullptr : "first paint");
+    m_painted = true;
+
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
@@ -451,6 +493,7 @@ void OverlayWindow::ensureBackdrop() {
     }
     if (logical.isEmpty()) return;
 
+    LG_TRACE("build backdrop");
     QPixmap pm(wantPx);
     pm.setDevicePixelRatio(dpr);
     pm.fill(Qt::transparent);

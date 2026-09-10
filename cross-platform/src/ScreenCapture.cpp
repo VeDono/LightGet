@@ -31,6 +31,8 @@
 
 #include "ScreenCapture.h"
 
+#include "Trace.h"
+
 #include <QGuiApplication>
 #include <QCursor>
 #include <QPixmap>
@@ -211,7 +213,10 @@ std::vector<CapturedScreen> captureAllDisplays(ScreenCaptureError& outError) {
 
     const QList<QScreen*> screens = QGuiApplication::screens();
     for (QScreen* screen : screens) {
+        Trace::Scope one("screen");
         QImage image = grabScreenPixels(screen);
+        if (Trace::enabled())
+            one.mark(QStringLiteral("%1x%2").arg(image.width()).arg(image.height()));
         if (image.isNull())
             continue;  // mirrors Swift's `guard ... else { continue }`
         result.push_back(CapturedScreen{ image, screen });

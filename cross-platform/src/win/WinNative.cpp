@@ -315,6 +315,18 @@ void WinNative_removeHotkeyHook() {
 // Capture the given screen at its exact physical resolution. Returns a null
 // QImage on any failure so the caller can fall back to the Qt baseline.
 // ---------------------------------------------------------------------------
+// Keeps a capture's DIB alive for exactly as long as the QImage that borrows its
+// pixels. Freed by QImage on destruction, so no capture buffer outlives its image.
+namespace {
+struct CaptureDib { HBITMAP dib; };
+void releaseCaptureDib(void* info) {
+    auto* held = static_cast<CaptureDib*>(info);
+    if (!held) return;
+    if (held->dib) DeleteObject(held->dib);
+    delete held;
+}
+}  // namespace
+
 QImage WinNative_captureScreen(QScreen* screen) {
     if (!screen) return QImage();
 
@@ -362,7 +374,8 @@ QImage WinNative_captureScreen(QScreen* screen) {
         bi.bmiHeader.biCompression = BI_RGB;
 
         void* bits = nullptr;
-        if (HBITMAP dib = CreateDIBSection(memDC, &bi, DIB_RGB_COLORS, &bits, nullptr, 0)) {
+        HBITMAP dib = CreateDIBSection(memDC, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (dib) {
             if (bits) {
                 HGDIOBJ previous = SelectObject(memDC, dib);
                 // SRCCOPY only — deliberately NOT CAPTUREBLT: that flag forces a
@@ -371,17 +384,27 @@ QImage WinNative_captureScreen(QScreen* screen) {
                 // windows; since the DWM composites those into the desktop surface
                 // itself, a plain SRCCOPY already sees them. macOS never captured
                 // the cursor, so this also makes the platforms behave alike.
-                if (BitBlt(memDC, 0, 0, w, h, screenDC,
-                           target->rc.left, target->rc.top, SRCCOPY)) {
+                const bool blitted = BitBlt(memDC, 0, 0, w, h, screenDC,
+                                            target->rc.left, target->rc.top, SRCCOPY);
+                SelectObject(memDC, previous);   // must precede DeleteDC below
+                if (blitted) {
                     GdiFlush();   // make sure the GDI writes landed in `bits`
                     // 32-bpp BI_RGB is B,G,R,unused per pixel — byte-for-byte
-                    // QImage::Format_RGB32. copy() detaches from the DIB memory.
-                    result = QImage(static_cast<const uchar*>(bits), w, h, w * 4,
-                                    QImage::Format_RGB32).copy();
+                    // QImage::Format_RGB32, so the DIB IS the image: hand its
+                    // memory to QImage and let the image own the bitmap, instead of
+                    // copying it out. That copy was a whole extra screen-sized
+                    // allocation plus memcpy per monitor per capture (33 MB on a
+                    // 4K display), all of it first-touch pages the OS has to fault
+                    // in — the single most expensive thing on the capture path.
+                    // QImage is copy-on-write, so anything that edits it (the
+                    // export crop) still detaches as before.
+                    result = QImage(static_cast<uchar*>(bits), w, h, w * 4,
+                                    QImage::Format_RGB32, &releaseCaptureDib,
+                                    new CaptureDib{dib});
+                    dib = nullptr;   // ownership moved to the QImage
                 }
-                SelectObject(memDC, previous);
             }
-            DeleteObject(dib);
+            if (dib) DeleteObject(dib);
         }
         DeleteDC(memDC);
     }
@@ -466,4 +489,49 @@ void WinNative_optOutOfPowerThrottling() {
 void WinNative_setCaptureBoost(bool on) {
     SetPriorityClass(GetCurrentProcess(),
                      on ? ABOVE_NORMAL_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS);
+}
+
+// Walk the whole GDI capture path once, at a moment of our choosing, so the FIRST
+// real capture does not have to. A tray app sits idle for hours; by the time the
+// user hits the shortcut — typically with a game holding the machine — none of
+// this has ever run in the process, and every step is paying first-use costs at
+// the worst possible moment: GDI and the DIB engine loading, the heap growing to
+// screen-buffer size, and the OS faulting in that many fresh pages.
+//
+// Everything here is the real code path, only with a 1x1 blit instead of a full
+// one, so nothing of the user's screen is read. The buffer is allocated at full
+// screen size on purpose: growing the heap is most of the cost being moved.
+void WinNative_warmUpCapture() {
+    HDC screenDC = GetDC(nullptr);
+    if (!screenDC) return;
+
+    const int w = GetSystemMetrics(SM_CXSCREEN);
+    const int h = GetSystemMetrics(SM_CYSCREEN);
+    if (w > 0 && h > 0) {
+        if (HDC memDC = CreateCompatibleDC(screenDC)) {
+            BITMAPINFO bi{};
+            bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+            bi.bmiHeader.biWidth       = w;
+            bi.bmiHeader.biHeight      = -h;
+            bi.bmiHeader.biPlanes      = 1;
+            bi.bmiHeader.biBitCount    = 32;
+            bi.bmiHeader.biCompression = BI_RGB;
+
+            void* bits = nullptr;
+            if (HBITMAP dib = CreateDIBSection(memDC, &bi, DIB_RGB_COLORS,
+                                               &bits, nullptr, 0)) {
+                if (bits) {
+                    HGDIOBJ previous = SelectObject(memDC, dib);
+                    // One pixel: enough to fault the blit path in, nothing of the
+                    // screen retained.
+                    BitBlt(memDC, 0, 0, 1, 1, screenDC, 0, 0, SRCCOPY);
+                    GdiFlush();
+                    SelectObject(memDC, previous);
+                }
+                DeleteObject(dib);
+            }
+            DeleteDC(memDC);
+        }
+    }
+    ReleaseDC(nullptr, screenDC);
 }
