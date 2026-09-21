@@ -34,6 +34,7 @@
 #include <QSysInfo>
 #include <QPalette>
 #include <QClipboard>
+#include <QElapsedTimer>
 #include <QWidget>
 #include <QImageWriter>
 #include <QPainter>
@@ -256,6 +257,7 @@ bool appIsDark() {
 // Implemented in win/WinNative.cpp and OverlayWindow.cpp. File scope on purpose:
 // an extern inside an anonymous namespace gets internal linkage and fails to link.
 extern void WinNative_warmUpCapture();
+extern void WinNative_forceOverlayForeground(void* windowHandle);
 extern void LightGet_warmOverlayCursors();
 
 namespace {
@@ -310,6 +312,12 @@ void warmUpCaptureStack() {
 
     // 6. The GDI capture path, with a 1x1 blit — see the note in WinNative.cpp.
     WinNative_warmUpCapture();
+}
+
+// Hand the mouse to the overlay even when a game owns the foreground. No-op off
+// Windows, where activating a window is not gated this way.
+inline void claimForeground(QWidget* w) {
+    if (w) WinNative_forceOverlayForeground(reinterpret_cast<void*>(w->winId()));
 }
 
 }  // namespace
@@ -808,6 +816,14 @@ void TrayApp::startCapture() {
     captureBoost(true);
     LG_TRACE("capture");
 
+    // Always measured, never written unless something goes wrong: a handful of
+    // clock reads costs nothing next to a screen grab, and a capture that took
+    // seconds is not reproducible on demand, so the numbers have to already be
+    // there when it happens.
+    QElapsedTimer capTimer;
+    capTimer.start();
+    qint64 msGrab = 0, msBuild = 0, msShow = 0;
+
     // Scope an explicit autorelease pool over the grab + overlay construction so
     // per-capture Cocoa litter (CGImages etc.) dies when this function returns.
     LIGHTGET_MAC_POOL_BARRIER;
@@ -821,6 +837,7 @@ void TrayApp::startCapture() {
         LG_TRACE("grab pixels");
         shots = ScreenCapture::captureAllDisplays(err);
     }
+    msGrab = capTimer.elapsed();
 
     if (err != ScreenCaptureError::None || shots.empty()) {
         m_isCapturing = false;
@@ -849,6 +866,7 @@ void TrayApp::startCapture() {
         m_overlays.append(overlay);
     }
 
+    msBuild = capTimer.elapsed();
     overlayScope.mark(QStringLiteral("constructed %1").arg(m_overlays.size()));
 
     // Show + raise all overlays, then apply the native shield level once mapped.
@@ -861,6 +879,7 @@ void TrayApp::startCapture() {
         if (animateDim) w->startDimFadeIn();
     }
 
+    msShow = capTimer.elapsed();
     overlayScope.mark(QStringLiteral("shown"));
 
     // Keyboard focus goes to the overlay under the cursor (Esc / ⌘C etc.).
@@ -874,6 +893,14 @@ void TrayApp::startCapture() {
         active->activateWindow();
         active->raise();
         active->setFocus();
+#if defined(Q_OS_WIN)
+        // activateWindow() alone is not enough against a game: see the long note on
+        // WinNative_forceOverlayForeground. Without this the overlay is up but the
+        // game still owns the pointer, so the cursor stays pinned where its
+        // mouselook left it until the user clicks to hand input over.
+        claimForeground(active);
+        overlayScope.mark(QStringLiteral("foreground claimed"));
+#endif
     }
 
     // Defeat a hidden cursor (e.g. a UE5 game): force it visible now and again
@@ -899,12 +926,29 @@ void TrayApp::startCapture() {
             active->activateWindow();
             active->raise();
             active->setFocus();
+#if defined(Q_OS_WIN)
+            claimForeground(active);   // second pass: the game may have grabbed back
+#endif
         }
     });
 
     // Overlays are up; commit the state transition: overlay != nil, not capturing.
     m_overlayShown = true;
     m_isCapturing = false;
+    // A capture is meant to be instant. If it was not, record where the time went
+    // so the next report comes with evidence instead of a guess.
+    const qint64 msTotal = capTimer.elapsed();
+    if (msTotal > 1500) {
+        Trace::note(QStringLiteral(
+                        "SLOW capture: %1 ms total - grab %2, build %3, show %4, "
+                        "activate %5 (screens: %6)")
+                        .arg(msTotal).arg(msGrab)
+                        .arg(msBuild - msGrab)
+                        .arg(msShow - msBuild)
+                        .arg(msTotal - msShow)
+                        .arg(m_overlays.size()));
+    }
+
     // NOTE: the boost is deliberately NOT dropped here. The overlay exists but has
     // not painted yet, and that first paint — backing store, backdrop — is the
     // heaviest frame of the whole gesture. Releasing it now handed the machine back

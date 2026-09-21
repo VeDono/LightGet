@@ -24,6 +24,14 @@ QString logPath();
 // Append one line, prefixed with the milliseconds since the app started.
 void log(const QString& line);
 
+// Append one line EVEN WHEN TRACING IS OFF. Reserved for anomalies worth
+// recording without the user having had to predict them -- a capture that took
+// seconds is exactly that: it cannot be reproduced on demand, it happens on
+// somebody else's machine under somebody else's game, and asking them to arm a
+// diagnostic first and then reproduce it is asking for the thing we already know
+// is hard. Writes nothing on a normal, fast capture.
+void note(const QString& line);
+
 // Timestamps a phase and writes "<name>: <ms>" when it goes out of scope.
 // Nested scopes are indented, so a capture reads as a tree.
 class Scope {
