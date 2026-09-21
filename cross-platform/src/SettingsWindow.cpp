@@ -23,6 +23,7 @@
 #include "Settings.h"
 #include "Localization.h"
 #include "Annotation.h"
+#include "AppCache.h"
 
 #include <QApplication>
 #include <QStackedWidget>
@@ -76,6 +77,7 @@
 #include <QVariantAnimation>
 #include <QEvent>
 #include <QStyle>
+#include <array>
 #include <functional>
 #include <vector>
 #include <cmath>
@@ -2080,6 +2082,18 @@ QWidget* SettingsWindow::buildGeneralTab() {
         addRowWidget(makeToggleRow(Loc::t("features.animatedDim"), tog, nullptr));
     }
 
+    // --- Whole screen when nothing is selected (toggle, no reset) ---
+    // Sits next to the downscale row because both describe what the output IS,
+    // not how the overlay looks.
+    {
+        auto* tog = new ToggleSwitch(m_tk);
+        tog->setChecked(s.fullScreenWithoutSelection());
+        connect(tog, &QAbstractButton::toggled, this, [](bool on) {
+            Settings::instance().setFullScreenWithoutSelection(on);
+        });
+        addRowWidget(makeToggleRow(Loc::t("settings.fullNoSelection"), tog, nullptr));
+    }
+
     // --- Downscale toggle + reset ---
     // Only meaningful where the screenshot comes back larger than the logical
     // desktop — a Retina Mac or a scaled Windows display. On a plain 1x setup
@@ -2114,6 +2128,95 @@ QWidget* SettingsWindow::buildGeneralTab() {
             Settings::instance().setUpdateCheckOnLaunch(on);
         });
         addRowWidget(makeToggleRow(Loc::t("settings.autoUpdate"), tog, nullptr));
+    }
+
+    // --- Clear downloaded update files (button, no reset) ---
+    // Directly under the update toggle, because that is what produces them: every
+    // accepted update leaves its archive and the folder it was unpacked into in the
+    // temp directory, and the process that would have removed them has already
+    // exited by then to let the new build take its place.
+    {
+        auto* cacheBtn = new QPushButton;
+        cacheBtn->setFixedSize(kFieldWidth, 32);
+        cacheBtn->setCursor(Qt::PointingHandCursor);
+        cacheBtn->setStyleSheet(QStringLiteral(
+            "QPushButton { background-color:%1; color:%2; border:1px solid %3;"
+            " border-radius:8px; font-size:13px; }"
+            "QPushButton:hover:enabled { border-color:%4; }"
+            "QPushButton:disabled { color:%5; }")
+            .arg(colCss(m_tk.controlFill), colCss(m_tk.text),
+                 colCss(m_tk.border), colCss(m_tk.accent), colCss(m_tk.text3)));
+
+        // The single place that syncs the button with what is actually on disk, so
+        // the size on the label cannot drift from reality after a clear. Nothing to
+        // delete -> the button says so and goes flat rather than offering a no-op.
+        auto refresh = [cacheBtn]() {
+            const qint64 bytes = AppCache::totalBytes();
+            const bool any = bytes > 0;
+            cacheBtn->setEnabled(any);
+            cacheBtn->setText(any
+                ? Loc::t("settings.cache.clear").arg(AppCache::humanSize(bytes))
+                : Loc::t("settings.cache.empty"));
+        };
+        refresh();
+
+        connect(cacheBtn, &QPushButton::clicked, this, [this, refresh]() {
+            const bool ok = AppCache::clear();
+            refresh();   // whatever survived is still counted, so the label stays true
+            if (ok) return;
+            QMessageBox box(this);
+            box.setIcon(QMessageBox::NoIcon);
+            box.setText(Loc::t("settings.cache.failedTitle"));
+            box.setInformativeText(Loc::t("settings.cache.failedBody"));
+            box.exec();
+        });
+        addRowWidget(makeRow(Loc::t("settings.cache"), cacheBtn, nullptr));
+    }
+
+    // --- Automatic sweep of those same files (combo, no reset) ---
+    // Directly under the button it automates, and phrased by AGE ("older than a
+    // week") rather than by schedule ("every week") because that is what it
+    // actually does — and because the difference is the whole safety of the
+    // feature: a trace log written this morning survives a sweep the user armed a
+    // month ago. See the note in AppCache.h.
+    {
+        struct Choice { const char* key; int days; };
+        static const std::array<Choice, 3> kChoices{{
+            {"settings.cache.auto.never", 0},
+            {"settings.cache.auto.week",  7},
+            {"settings.cache.auto.month", 30},
+        }};
+
+        auto* combo = new LanguageCombo(m_tk);
+        for (const Choice& c : kChoices) combo->addItem(Loc::t(c.key));
+        const int current = s.autoClearDays();
+        int idx = 0;
+        for (size_t i = 0; i < kChoices.size(); ++i)
+            if (kChoices[i].days == current) { idx = int(i); break; }
+        combo->setCurrentIndex(idx);
+        combo->setMinimumWidth(150);
+        combo->setFixedHeight(30);
+        combo->setCursor(Qt::PointingHandCursor);
+        combo->setStyleSheet(QStringLiteral(
+            "QComboBox { background-color:%1; color:%2; border:1px solid %3;"
+            " border-radius:8px; padding:0 28px 0 12px; font-size:13px; }"
+            "QComboBox:hover { border-color:%4; }"
+            "QComboBox:focus { border-color:%4; }"
+            "QComboBox::drop-down { border:none; width:26px; }"
+            "QComboBox::down-arrow { image:none; width:0; height:0; }"
+            "QComboBox QAbstractItemView {"
+            " background-color:%1; color:%2; border:1px solid %3; border-radius:8px;"
+            " padding:4px; outline:none;"
+            " selection-background-color:%5; selection-color:%4; }"
+            "QComboBox QAbstractItemView::item {"
+            " min-height:26px; padding:2px 8px; border-radius:6px; }")
+            .arg(colCss(m_tk.control), colCss(m_tk.text), colCss(m_tk.border),
+                 colCss(m_tk.accent), colCss(m_tk.accentWeak)));
+        connect(combo, QOverload<int>::of(&QComboBox::activated), this, [](int i) {
+            if (i < 0 || i >= int(kChoices.size())) return;
+            Settings::instance().setAutoClearDays(kChoices[size_t(i)].days);
+        });
+        addRowWidget(makeRow(Loc::t("settings.cache.auto"), combo, nullptr));
     }
 
     outer->addWidget(card);

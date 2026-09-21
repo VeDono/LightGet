@@ -94,6 +94,17 @@ public:
     void setDownscaleRetina(bool v);
     bool animatedDim() const;                // default false (instant dim/teardown)
     void setAnimatedDim(bool v);
+    // Copy/save the WHOLE screen when the user asks for output without having
+    // drawn a selection (default true). Without it those keystrokes are silently
+    // inert, which reads as the app having missed the key rather than as a
+    // deliberate no-op. Off restores the strict "no selection, no output" rule.
+    bool fullScreenWithoutSelection() const;
+    void setFullScreenWithoutSelection(bool v);
+    // Automatic sweep of the temp-dir leftovers, in DAYS OF AGE — entries nothing
+    // has touched for this long are deleted at launch. 0 (the default) is off, so
+    // an upgrade never starts deleting files the user did not ask it to.
+    int autoClearDays() const;
+    void setAutoClearDays(int v);
     // Ask GitHub for a newer release when the app starts (default true). A single
     // unauthenticated request to the public releases API; no telemetry.
     bool updateCheckOnLaunch() const;
