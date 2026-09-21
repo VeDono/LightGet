@@ -2228,11 +2228,27 @@ struct OutputPoolBarrier {
 #endif
 
 QImage OverlayWindow::renderOutput() const {
-    if (!m_selection || m_selection->width() <= 1 || m_selection->height() <= 1)
-        return QImage();
-    const QRectF sel = *m_selection;
     const qreal s = scale();               // screenshot pixels per logical point
     if (s <= 0.0 || m_screenshot.isNull()) return QImage();
+
+    // A selection narrower or shorter than a single point is a stray click, not a
+    // region: treat it as "nothing selected" rather than as a degenerate crop.
+    const bool haveSelection =
+        m_selection && m_selection->width() > 1 && m_selection->height() > 1;
+
+    // WHOLE-SCREEN FALLBACK. Asking for output without having drawn anything used
+    // to produce silence — renderOutput() returned a null image and both callers
+    // bailed — which is indistinguishable from the app having dropped the
+    // keystroke. Defaulting to the full screen matches what the gesture plainly
+    // means ("I want this screen"), and the setting exists for anyone who would
+    // rather a stray Ctrl+C did nothing at all.
+    //
+    // The screenshot is the CLEAN capture: the dim layer and the chrome are
+    // painted over it at draw time, never into it, so the full-screen output is
+    // the undimmed desktop — the same pixels a selection covering everything
+    // would have produced.
+    if (!haveSelection && !Settings::instance().fullScreenWithoutSelection())
+        return QImage();
 
     // CROP EXACT PIXELS out of the screenshot.
     //
@@ -2245,9 +2261,17 @@ QImage OverlayWindow::renderOutput() const {
     // right edge. Copying the pixel rect gives a byte-for-byte crop, so neither can
     // happen. The rect is snapped to whole pixels and clamped to the image, so we
     // never sample outside it.
-    QRect src = QRectF(sel.left() * s, sel.top() * s,
-                       sel.width() * s, sel.height() * s).toRect()
-                    .intersected(m_screenshot.rect());
+    //
+    // With no selection the source rect is the whole screenshot, which makes every
+    // step below — the annotation transform, the downscale — fall out unchanged
+    // instead of needing a second code path.
+    QRect src = m_screenshot.rect();
+    if (haveSelection) {
+        const QRectF sel = *m_selection;
+        src = QRectF(sel.left() * s, sel.top() * s,
+                     sel.width() * s, sel.height() * s).toRect()
+                  .intersected(m_screenshot.rect());
+    }
     if (src.width() <= 0 || src.height() <= 0) return QImage();
 
     QImage out = m_screenshot.copy(src);

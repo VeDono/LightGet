@@ -19,6 +19,8 @@ constexpr char kDisplay[]       = "hotKeyDisplay";
 constexpr char kDim[]           = "dimOpacity";
 constexpr char kDownscale[]     = "downscaleRetina";
 constexpr char kAnimatedDim[]   = "animatedDim";
+constexpr char kFullNoSel[]     = "fullScreenWithoutSelection";
+constexpr char kAutoClear[]     = "autoClearDays";
 constexpr char kLanguage[]      = "language";
 constexpr char kAppearance[]    = "appearance";
 constexpr char kSkipVersion[]   = "skippedUpdateVersion";
@@ -146,6 +148,27 @@ bool Settings::animatedDim() const {
 
 void Settings::setAnimatedDim(bool v) {
     m_s.setValue(kAnimatedDim, v);
+}
+
+bool Settings::fullScreenWithoutSelection() const {
+    // Default TRUE: a copy/save keystroke with no selection yields the whole
+    // screen instead of nothing at all.
+    return m_s.value(kFullNoSel, true).toBool();
+}
+
+void Settings::setFullScreenWithoutSelection(bool v) {
+    m_s.setValue(kFullNoSel, v);
+}
+
+int Settings::autoClearDays() const {
+    // Default 0 = never. Anything unparsable or negative also means never, so a
+    // hand-edited settings file cannot arm a sweep by accident.
+    const int v = m_s.value(kAutoClear, 0).toInt();
+    return v > 0 ? v : 0;
+}
+
+void Settings::setAutoClearDays(int v) {
+    m_s.setValue(kAutoClear, v > 0 ? v : 0);
 }
 
 // --- General ---

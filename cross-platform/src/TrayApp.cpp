@@ -10,6 +10,7 @@
 
 #include "TrayApp.h"
 
+#include "AppCache.h"
 #include "GlobalHotkey.h"
 #include "Localization.h"
 #include "OverlayWindow.h"
@@ -379,6 +380,18 @@ void TrayApp::start() {
     // so it never competes with startup work, and silent unless there IS an update.
     if (Settings::instance().updateCheckOnLaunch())
         QTimer::singleShot(8000, this, [this]() { checkForUpdates(true); });
+
+    // Automatic sweep of the temp-dir leftovers (off by default). Last in the
+    // startup queue: it walks a directory tree, which is the least urgent thing
+    // the app does, and by then any update download this launch started is far too
+    // recent for an age-based sweep to touch it. Failures are ignored on purpose —
+    // a locked file is not worth a dialog the user did not ask for; the settings
+    // button reports the same failure when they DO ask.
+    if (const int days = Settings::instance().autoClearDays(); days > 0) {
+        QTimer::singleShot(12000, this, [days]() {
+            AppCache::remove(AppCache::pathsOlderThan(days));
+        });
+    }
 
     m_hotKey = new GlobalHotkey(this);
     // Queued on purpose: this fires from inside an OS input callback (a WM_HOTKEY
