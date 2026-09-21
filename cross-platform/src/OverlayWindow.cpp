@@ -9,6 +9,8 @@
 
 #include "OverlayWindow.h"
 
+#include <QElapsedTimer>
+
 #include "Trace.h"
 
 #include "Toolbar.h"
@@ -434,6 +436,9 @@ void OverlayWindow::paintEvent(QPaintEvent* event) {
     // store and the backdrop. Later frames are the drag path and would bury the
     // interesting numbers.
     Trace::Scope firstPaint(m_painted ? nullptr : "first paint");
+    QElapsedTimer paintTimer;
+    const bool timeThisPaint = !m_painted;
+    if (timeThisPaint) paintTimer.start();
     m_painted = true;
 
     QPainter p(this);
@@ -476,6 +481,14 @@ void OverlayWindow::paintEvent(QPaintEvent* event) {
     drawSelectionChrome(p);
     drawActiveTextChrome(p);
     drawSnapGuides(p);
+
+    // The first frame carries the backing store and the backdrop. If it alone took
+    // most of a second, the cost is the compositor, not the capture -- which is the
+    // fingerprint of a game being forced out of exclusive fullscreen.
+    if (timeThisPaint && paintTimer.elapsed() > 500) {
+        Trace::note(QStringLiteral("SLOW first paint: %1 ms (%2x%3)")
+                        .arg(paintTimer.elapsed()).arg(width()).arg(height()));
+    }
 }
 
 void OverlayWindow::ensureBackdrop() {

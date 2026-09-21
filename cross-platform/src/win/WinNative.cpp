@@ -535,3 +535,66 @@ void WinNative_warmUpCapture() {
     }
     ReleaseDC(nullptr, screenDC);
 }
+
+// Take the foreground away from whatever owns it — in practice a game — and hand
+// the mouse to the overlay.
+//
+// Qt's activateWindow() is SetForegroundWindow(), and Windows SILENTLY IGNORES
+// that call from a process which neither owns the foreground window nor has had
+// recent user input. A tray app woken by a low-level hook is exactly that case, so
+// the overlay appeared but the game kept the mouse: the pointer stayed pinned
+// wherever the game's mouselook had warped it, and only a click — real input,
+// aimed at our window — handed input over.
+//
+// Two things have to be undone:
+//
+//  1. Cursor confinement. A game that locks the pointer calls ClipCursor with its
+//     own rectangle. That clip is a property of the DESKTOP, not of the game, so
+//     any process may clear it, and until it is cleared the pointer cannot leave
+//     that rectangle no matter who has focus.
+//
+//  2. The foreground restriction itself. Attaching our input queue to the
+//     foreground thread's makes Windows treat us as part of that input context,
+//     which is the documented way out and what every screen-capture tool does.
+//     Only if that still fails do we touch the foreground lock timeout, and it is
+//     put back immediately.
+void WinNative_forceOverlayForeground(void* windowHandle) {
+    HWND hwnd = static_cast<HWND>(windowHandle);
+    if (!hwnd) return;
+
+    ClipCursor(nullptr);   // free the pointer from a game's lock rectangle
+
+    const HWND  fg        = GetForegroundWindow();
+    const DWORD ourThread = GetCurrentThreadId();
+    const DWORD fgThread  = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+
+    const bool attached = (fgThread && fgThread != ourThread)
+                          && AttachThreadInput(ourThread, fgThread, TRUE);
+
+    BringWindowToTop(hwnd);
+    SetForegroundWindow(hwnd);
+    SetActiveWindow(hwnd);
+    SetFocus(hwnd);
+
+    if (attached) AttachThreadInput(ourThread, fgThread, FALSE);
+
+    if (GetForegroundWindow() == hwnd) return;
+
+    // Still refused. The remaining gate is the foreground lock timeout, a system
+    // setting; zero it just long enough for one more attempt and restore it, so
+    // nothing about the user's configuration is left changed.
+    DWORD lockTimeout = 0;
+    if (!SystemParametersInfoW(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &lockTimeout, 0))
+        return;
+
+    SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0,
+                          reinterpret_cast<PVOID>(static_cast<UINT_PTR>(0)),
+                          SPIF_SENDCHANGE);
+    BringWindowToTop(hwnd);
+    SetForegroundWindow(hwnd);
+    SetActiveWindow(hwnd);
+    SetFocus(hwnd);
+    SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0,
+                          reinterpret_cast<PVOID>(static_cast<UINT_PTR>(lockTimeout)),
+                          SPIF_SENDCHANGE);
+}

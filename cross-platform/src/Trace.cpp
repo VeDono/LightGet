@@ -42,8 +42,15 @@ QString logPath() {
     return p;
 }
 
-void log(const QString& line) {
-    if (!enabled()) return;
+// Shared writer. `force` is what lets note() through while tracing is off.
+static void write(const QString& line, bool force);
+
+void log(const QString& line) { write(line, false); }
+
+void note(const QString& line) { write(line, true); }
+
+static void write(const QString& line, bool force) {
+    if (!force && !enabled()) return;
 
     // Opened per line and closed again: tracing is rare, and a crash mid-capture
     // must not cost us the lines written before it.
