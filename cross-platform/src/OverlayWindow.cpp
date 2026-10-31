@@ -11,7 +11,22 @@
 
 #include <QElapsedTimer>
 
+#include "ScreenCapture.h"
 #include "Trace.h"
+
+#include <QSaveFile>
+#include <QThread>
+#include <atomic>
+#include <thread>
+#include <QImageWriter>
+#include <QBackingStore>
+#include <QBuffer>
+#include <QGuiApplication>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <QEventLoop>
+#include <QTimer>
 
 #include "Toolbar.h"
 #include "Settings.h"
@@ -130,14 +145,6 @@ QCursor overlayCrosshair(qreal dpr) {
 
 // Render-harness export: the painted crosshair, so its contrast can be reviewed
 // offscreen (it only ships on Windows/Linux, where it cannot be eyeballed here).
-// Build the crosshair for every screen currently attached, so the per-DPR cursor
-// cache is populated before the first capture needs it. Called from the startup
-// warm-up; declared at file scope so the caller can reach it.
-void LightGet_warmOverlayCursors() {
-    for (QScreen* sc : QGuiApplication::screens())
-        if (sc) (void)overlayCrosshair(sc->devicePixelRatio());
-}
-
 QPixmap LightGet_debugCrosshair(qreal dpr) {
     return makeCrosshairCursor(dpr).pixmap();
 }
@@ -161,30 +168,20 @@ OverlayWindow::OverlayWindow(const QImage& screenshot, QScreen* screen, QWidget*
     setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool);
 #endif
 #if defined(Q_OS_WIN)
-    // EXPERIMENT, opt-in with LIGHTGET_OPAQUE_OVERLAY=1.
-    //
-    // This overlay is OPAQUE on Windows. paintEvent blits the captured screenshot
-    // across every damaged pixel before anything else (the same fact that makes
-    // WA_OpaquePaintEvent below safe), and the dim is painted ON TOP of that image
-    // rather than through the window; nothing on Windows reads the shield level,
-    // and nothing animates window opacity. So the desktop behind is never visible,
-    // and asking for a translucent background makes Qt build a per-pixel-alpha
-    // layered window and hand the compositor a full ARGB surface for an entire
-    // screen -- on the first show and again on every drag frame -- to blend
-    // against something that is always completely covered.
-    //
-    // Not the default yet, because dropping it has one plausible cost: the backing
-    // store starts zero-filled, so if Windows presents a frame before Qt's first
-    // paint lands, the capture could open with a black flash. That is exactly the
-    // kind of thing that needs a real Windows screen to judge, so it ships as a
-    // switch rather than a guess. If it is faster AND there is no flash, it
-    // becomes the default.
-    //
-    // macOS keeps translucency unconditionally: there the shield window really is
-    // composited by the system.
-    const bool opaqueOverlay = qgetenv("LIGHTGET_OPAQUE_OVERLAY").trimmed() == "1";
-    setAttribute(Qt::WA_TranslucentBackground, !opaqueOverlay);
+    // Opaque on Windows. paintEvent covers every damaged pixel with the captured
+    // screenshot before anything else (the same fact that makes WA_OpaquePaintEvent
+    // below safe) and the dim is painted on top of that image, not through the
+    // window, so the desktop behind is never visible. Asking for a translucent
+    // background anyway makes Qt build a per-pixel-alpha layered window and push it
+    // through UpdateLayeredWindow, the slowest path to the compositor there is,
+    // while a game is competing for the same GPU. TrayApp cloaks the window until
+    // its first paint, so the empty backing store is never presented.
+    // LIGHTGET_TRANSLUCENT_OVERLAY=1 restores the old window.
+    setAttribute(Qt::WA_TranslucentBackground,
+                 qgetenv("LIGHTGET_TRANSLUCENT_OVERLAY").trimmed() == "1");
 #else
+    // macOS: measured with --bench-live, an opaque window changes neither the frame
+    // rate nor WindowServer's load, so the shield stays as it has always been.
     setAttribute(Qt::WA_TranslucentBackground, true);
 #endif
     setAttribute(Qt::WA_NoSystemBackground, true);
@@ -205,12 +202,15 @@ OverlayWindow::OverlayWindow(const QImage& screenshot, QScreen* screen, QWidget*
     // behavior without touching anything else.
     setAttribute(Qt::WA_OpaquePaintEvent, true);
 
+    m_dimOpacity = Settings::instance().dimOpacity();
+    m_downscale = Settings::instance().downscaleRetina();
+
     // Default active color matches systemRed (palette index 0).
     m_color = Palette::colors().isEmpty() ? QColor(Qt::red) : Palette::colors().at(0);
 
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
-    setCursor(overlayCrosshair(devicePixelRatioF()));   // crosshair until a selection exists
+    applyCursor(overlayCrosshair(devicePixelRatioF()));   // crosshair until a selection exists
 
     if (m_screen) {
         setGeometry(m_screen->geometry());
@@ -230,8 +230,15 @@ OverlayWindow::OverlayWindow(const QImage& screenshot, QScreen* screen, QWidget*
     // applyShieldLevel() — that runs after show(), too late to suppress the appear
     // animation. winId() forces native NSWindow creation so the hook can reach it.
 #if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+    extern bool MacNative_notchRect(const QRect& screenGeometry, QRect* outLocal);
+    if (m_screen && QGuiApplication::platformName() == QLatin1String("cocoa"))
+        MacNative_notchRect(m_screen->geometry(), &m_notch);
+
+    // The native hooks treat winId() as an NSView*, which only holds on the cocoa
+    // platform; the offscreen harness hands out plain integers.
     extern void OverlayWindow_disableShowAnimation(WId win);  // implemented in MacNative.mm
-    OverlayWindow_disableShowAnimation(winId());
+    if (QGuiApplication::platformName() == QLatin1String("cocoa"))
+        OverlayWindow_disableShowAnimation(winId());
 #endif
 }
 
@@ -245,7 +252,8 @@ OverlayWindow::~OverlayWindow() = default;
 void OverlayWindow::applyShieldLevel() {
 #if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
     extern void OverlayWindow_applyShieldLevel(WId win);  // implemented in OverlayWindow_mac.mm
-    OverlayWindow_applyShieldLevel(winId());
+    if (QGuiApplication::platformName() == QLatin1String("cocoa"))
+        OverlayWindow_applyShieldLevel(winId());
 #endif
     // No-op otherwise (off macOS, or macOS without HAVE_MAC_NATIVE).
 }
@@ -265,7 +273,7 @@ void OverlayWindow::clearSelectionState() {
     m_activeTextIndex.reset();
     m_dragMode = DragMode::None;
     hideToolbar();
-    setCursor(overlayCrosshair(devicePixelRatioF()));
+    applyCursor(overlayCrosshair(devicePixelRatioF()));
     update();
 }
 
@@ -281,7 +289,7 @@ qreal OverlayWindow::scale() const {
 }
 
 qreal OverlayWindow::outputScale() const {
-    return Settings::instance().downscaleRetina() ? 1.0 : scale();
+    return m_downscale ? 1.0 : scale();
 }
 
 // ============================================================================
@@ -431,6 +439,56 @@ std::optional<int> OverlayWindow::textAnnotationIndex(const QPointF& p) const {
 // Rendering (Spec 3 §4) — strict paint order
 // ============================================================================
 
+namespace {
+// Shared by the label's painter and its damage region. Font DPI is fixed for the
+// process lifetime, so these are built once rather than per paint.
+const QFont& selectionLabelFont() {
+    static const QFont f = [] {
+        QFont font;
+        font.setPointSizeF(12);
+        font.setWeight(QFont::Medium);
+        return font;
+    }();
+    return f;
+}
+const QFontMetricsF& selectionLabelMetrics() {
+    static const QFontMetricsF fm(selectionLabelFont());
+    return fm;
+}
+}  // namespace
+
+bool OverlayWindow::clearsNotch(const QRectF& r) const {
+    if (m_notch.isNull()) return true;
+    // A little air around the housing, so nothing sits flush against it.
+    return !r.intersects(QRectF(m_notch).adjusted(-6, 0, 6, 6));
+}
+
+qreal OverlayWindow::belowNotch() const {
+    return m_notch.isNull() ? 0 : m_notch.bottom() + 1 + 6;
+}
+
+void OverlayWindow::applyCursor(const QCursor& c) {
+    // Hover and drag handlers ask for a cursor on every mouse move, and setCursor
+    // reaches the platform even when nothing changed.
+    if (cursor() != c) setCursor(c);
+}
+
+// Everything a selection's chrome paints: the border and handles straddling its
+// edge, plus the size label. The interior is deliberately absent, because neither
+// the screenshot nor the annotations inside it change during a selection gesture.
+QRegion OverlayWindow::selectionDamage(const QRectF& sel) const {
+    const qreal pad = kHandleSize + 2;
+    QRegion r(sel.adjusted(-pad, -pad, pad, pad).toAlignedRect());
+    const QRectF inner = sel.adjusted(pad, pad, -pad, -pad);
+    if (inner.isValid() && !inner.isEmpty()) r -= inner.toRect();
+
+    const qreal labelMax = 160;   // worst-case "9999 × 9999"
+    const QSizeF text(labelMax, selectionLabelMetrics().height());
+    const QPointF o = selectionLabelOrigin(sel, text);
+    r += QRectF(o, text).adjusted(-6, -4, 6, 4).toAlignedRect();
+    return r;
+}
+
 void OverlayWindow::paintEvent(QPaintEvent* event) {
     // Only the FIRST paint is timed: that is the one that pays for the backing
     // store and the backdrop. Later frames are the drag path and would bury the
@@ -441,38 +499,38 @@ void OverlayWindow::paintEvent(QPaintEvent* event) {
     if (timeThisPaint) paintTimer.start();
     m_painted = true;
 
+    QElapsedTimer benchTimer;
+    benchTimer.start();
+
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
-    // Respect the damaged region. During a drag the dirty rect is a small band
-    // around the selection/annotation, so clip every draw op to it and — crucially
-    // — blit only the matching sub-rectangle of the cached Retina backdrop instead
-    // of the whole screenshot. This is what makes the per-move repaint cost scale
-    // with the gesture size, not the screen size. On a full repaint (press /
-    // release / tool change) the damage is the whole widget, so nothing shrinks.
-    const QRect damage = event->rect();
-    p.setClipRect(damage);
+    // Respect the damaged region, rect by rect. A selection gesture damages a thin
+    // frame, so the region can be many rects; handing that to QPainter as one
+    // complex clip would drop the blit off its fast path (rect clip -> memcpy) onto
+    // per-span compositing. Past a couple of dozen rects the bounding box is cheaper.
+    QRegion damage = event->region();
+    if (damage.rectCount() > 32) damage = damage.boundingRect();
 
-    // Blit the cached upright backdrop instead of re-rendering the full QImage
-    // (with its orientation transform) every frame — pixmap blits are GPU-fast.
-    // Draw the WHOLE backdrop at the origin (DPR-aware); the clip rect set above
-    // restricts the actual paint to the damaged band, so a partial repaint stays
-    // cheap. NOTE: do NOT hand-compute a device-pixel source sub-rect — passing
-    // `damage * dpr` as drawPixmap's source read from the wrong part of the Retina
-    // backdrop whenever the damage rect was away from the origin (a partial repaint
-    // while shrinking the selection), which made the dimmed area show the captured
-    // frame shifted. Drawing the full pixmap at (0,0) is always positionally exact.
+    // Draw the WHOLE backdrop at the origin (DPR-aware); the clip restricts the
+    // actual paint. NOTE: do NOT hand-compute a device-pixel source sub-rect —
+    // passing `damage * dpr` as drawPixmap's source read from the wrong part of the
+    // Retina backdrop whenever the damage rect was away from the origin (a partial
+    // repaint while shrinking the selection), which made the dimmed area show the
+    // captured frame shifted. Drawing the full pixmap at (0,0) is always exact.
     ensureBackdrop();
-    if (!m_backdrop.isNull()) {
-        p.drawPixmap(0, 0, m_backdrop);
+    for (const QRect& r : damage) {
+        p.setClipRect(r);
+        if (!m_backdrop.isNull()) p.drawPixmap(0, 0, m_backdrop);
+        drawDim(p);
     }
 
-    // drawDim already builds an even-odd path covering rect() with the selection
-    // hole; the clip rect restricts the fill to the damaged band, so re-dimming a
-    // small vacated area is cheap (no full-screen alpha fill).
-    drawDim(p);
+    // Vector content goes through the whole region in one pass: stroking it once
+    // per damage rect would repeat the expensive part (building the outline) for
+    // pixels the clip then throws away.
+    p.setClipRegion(damage);
     for (int i = 0; i < m_annotations.size(); ++i) {
         if (i == m_editingIndex) continue;   // hide the one being edited inline
         drawAnnotation(p, m_annotations[i]);
@@ -481,6 +539,9 @@ void OverlayWindow::paintEvent(QPaintEvent* event) {
     drawSelectionChrome(p);
     drawActiveTextChrome(p);
     drawSnapGuides(p);
+
+    ++m_benchPaints;
+    m_benchPaintNs += benchTimer.nsecsElapsed();
 
     // The first frame carries the backing store and the backdrop. If it alone took
     // most of a second, the cost is the compositor, not the capture -- which is the
@@ -507,9 +568,21 @@ void OverlayWindow::ensureBackdrop() {
     if (logical.isEmpty()) return;
 
     LG_TRACE("build backdrop");
+
+    // The normal case: the screenshot already IS the backdrop, pixel for pixel. Wrap
+    // it instead of painting a second screen-sized copy. NoFormatConversion makes the
+    // pixmap share the image's memory, which saves a whole buffer per monitor (31 MB
+    // at 3456x2234) exactly when the machine is short of memory, and keeps the format
+    // opaque, so damage blits are a memcpy rather than a per-pixel blend.
+    if (m_screenshot.size() == wantPx && qFuzzyCompare(m_screenshot.devicePixelRatio(), dpr)
+        && !m_screenshot.hasAlphaChannel()) {
+        m_backdrop = QPixmap::fromImage(m_screenshot, Qt::NoFormatConversion);
+        return;
+    }
+
     QPixmap pm(wantPx);
     pm.setDevicePixelRatio(dpr);
-    pm.fill(Qt::transparent);
+    pm.fill(Qt::black);   // opaque: a transparent fill would force an alpha pixmap
     QPainter pp(&pm);
     pp.setRenderHint(QPainter::SmoothPixmapTransform, true);
     // Paint over the pixmap's FULL extent, not just `logical` points: wantPx is
@@ -631,6 +704,27 @@ QRect OverlayWindow::currentDragBounds() const {
 }
 
 void OverlayWindow::updateDragRegion() {
+    // Selection gestures: what changes is the frame and the strip it crossed since
+    // last frame (dim <-> clear). Bounding-rect damage would repaint the whole
+    // interior per move, which on a near-fullscreen selection means a full-screen
+    // blit and a full-screen surface update to the compositor for a few pixels of
+    // actual change.
+    if ((m_dragMode == DragMode::NewSelection || m_dragMode == DragMode::MoveSelection ||
+         m_dragMode == DragMode::Resize) && m_selection) {
+        const QRectF now = *m_selection;
+        if (!m_lastSelection) {
+            m_lastSelection = now;
+            update();
+            return;
+        }
+        if (now == *m_lastSelection) return;
+        QRegion dirty = selectionDamage(now) + selectionDamage(*m_lastSelection);
+        dirty += QRegion(now.toAlignedRect()) ^ QRegion(m_lastSelection->toAlignedRect());
+        m_lastSelection = now;
+        update(dirty & rect());
+        return;
+    }
+
     const QRect now = currentDragBounds();
     if (now.isNull() || !now.isValid()) {
         // No tight bounds available for this gesture -> repaint everything.
@@ -659,18 +753,30 @@ void OverlayWindow::drawImageUpright(QPainter& p, const QImage& img, const QRect
 }
 
 void OverlayWindow::drawDim(QPainter& p) {
-    // Black @ dimOpacity over everything, with an even-odd hole over selection.
-    // m_dimProgress (1.0 unless an animated fade is running) scales the alpha so
-    // the dim layer can ease in/out when Settings::animatedDim() is on.
-    p.save();
+    // Black @ dimOpacity over everything except the selection. m_dimProgress (1.0
+    // unless an animated fade is running) scales the alpha so the dim layer can ease
+    // in/out when Settings::animatedDim() is on.
+    //
+    // Four solid rects rather than an even-odd path: this runs per mouse move, and
+    // a path goes through the antialiasing rasterizer for what is plain rectangle
+    // filling. Antialiasing off also keeps the hole's edge on the same device pixel
+    // as the selection border drawn over it.
     QColor dim(0, 0, 0);
-    dim.setAlphaF(static_cast<float>(Settings::instance().dimOpacity() * m_dimProgress));
-    QPainterPath path;
-    path.setFillRule(Qt::OddEvenFill);
-    path.addRect(QRectF(rect()));
-    if (m_selection) path.addRect(*m_selection);
-    p.fillPath(path, dim);
-    p.restore();
+    dim.setAlphaF(static_cast<float>(m_dimOpacity * m_dimProgress));
+
+    const bool aa = p.testRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::Antialiasing, false);
+    const QRectF all(rect());
+    const QRectF hole = m_selection ? m_selection->intersected(all) : QRectF();
+    if (hole.isEmpty()) {
+        p.fillRect(all, dim);
+    } else {
+        p.fillRect(QRectF(all.left(), all.top(), all.width(), hole.top() - all.top()), dim);
+        p.fillRect(QRectF(all.left(), hole.bottom(), all.width(), all.bottom() - hole.bottom()), dim);
+        p.fillRect(QRectF(all.left(), hole.top(), hole.left() - all.left(), hole.height()), dim);
+        p.fillRect(QRectF(hole.right(), hole.top(), all.right() - hole.right(), hole.height()), dim);
+    }
+    p.setRenderHint(QPainter::Antialiasing, aa);
 }
 
 void OverlayWindow::startDimFadeIn() {
@@ -846,6 +952,16 @@ void OverlayWindow::drawTextAnnotation(QPainter& p, const Annotation& a) {
 }
 
 // White 1px border + 8 handles (white fill / blue 1px border) + WxH size label.
+// Above the selection's top-left corner, or just inside it when that spot is off
+// screen or under the notch.
+QPointF OverlayWindow::selectionLabelOrigin(const QRectF& sel, const QSizeF& textSize) const {
+    QPointF origin(sel.left(), sel.top() - textSize.height() - 6);
+    if (origin.y() < 2) origin.setY(sel.top() + 4);
+    if (!clearsNotch(QRectF(origin, textSize).adjusted(-4, -2, 4, 2)))
+        origin.setY(belowNotch() + 2);
+    return origin;
+}
+
 void OverlayWindow::drawSelectionChrome(QPainter& p) {
     if (!m_selection) return;
     const QRectF sel = *m_selection;
@@ -874,14 +990,10 @@ void OverlayWindow::drawSelectionChrome(QPainter& p) {
     const int hPx = static_cast<int>(sel.height() * outputScale());
     const QString label = QString("%1 × %2").arg(wPx).arg(hPx);  // "W × H"
 
-    QFont font;
-    font.setPointSizeF(12);
-    font.setWeight(QFont::Medium);
-    QFontMetricsF fm(font);
+    const QFont& font = selectionLabelFont();
+    const QFontMetricsF& fm = selectionLabelMetrics();
     const QSizeF size(fm.horizontalAdvance(label), fm.height());
-
-    QPointF origin(sel.left(), sel.top() - size.height() - 6);
-    if (origin.y() < 2) origin.setY(sel.top() + 4);   // keep below top edge
+    const QPointF origin = selectionLabelOrigin(sel, size);
     const QRectF bg(origin.x() - 4, origin.y() - 2, size.width() + 8, size.height() + 4);
 
     p.save();
@@ -1030,16 +1142,16 @@ void OverlayWindow::updateHoverCursor(const QPointF& p) {
     if (m_cursorRectsDisabled) return;   // suppressed during a custom-cursor drag
 
     if (!m_selection) {
-        setCursor(overlayCrosshair(devicePixelRatioF()));   // no selection yet -> crosshair everywhere
+        applyCursor(overlayCrosshair(devicePixelRatioF()));   // no selection yet -> crosshair everywhere
         return;
     }
     const QRectF sel = *m_selection;
     switch (m_tool) {
     case Tool::Select:
         // Over a handle -> resize arrow; over body -> open hand.
-        if (auto h = handleHit(p, sel)) { setCursor(resizeCursorFor(*h)); return; }
-        if (sel.contains(p)) { setCursor(Qt::OpenHandCursor); return; }
-        setCursor(overlayCrosshair(devicePixelRatioF()));
+        if (auto h = handleHit(p, sel)) { applyCursor(resizeCursorFor(*h)); return; }
+        if (sel.contains(p)) { applyCursor(Qt::OpenHandCursor); return; }
+        applyCursor(overlayCrosshair(devicePixelRatioF()));
         break;
     case Tool::Text:
         if (m_editingIndex == -1 && m_activeTextIndex) {
@@ -1047,18 +1159,18 @@ void OverlayWindow::updateHoverCursor(const QPointF& p) {
             if (idx < m_annotations.size() && m_annotations[idx].tool == Tool::Text) {
                 const Annotation& a = m_annotations[idx];
                 if (screenRectAround(resizeHandleLocal(a), a).contains(p)) {
-                    setCursor(overlayCrosshair(devicePixelRatioF())); return;
+                    applyCursor(overlayCrosshair(devicePixelRatioF())); return;
                 }
                 if (screenRectAround(rotateHandleLocal(a), a).contains(p)) {
-                    setCursor(Qt::OpenHandCursor); return;
+                    applyCursor(Qt::OpenHandCursor); return;
                 }
             }
         }
-        if (sel.contains(p)) { setCursor(Qt::IBeamCursor); return; }
-        setCursor(overlayCrosshair(devicePixelRatioF()));
+        if (sel.contains(p)) { applyCursor(Qt::IBeamCursor); return; }
+        applyCursor(overlayCrosshair(devicePixelRatioF()));
         break;
     default:
-        setCursor(overlayCrosshair(devicePixelRatioF()));
+        applyCursor(overlayCrosshair(devicePixelRatioF()));
         break;
     }
 }
@@ -1081,7 +1193,8 @@ void OverlayWindow::confineCursorToScreen() {
     // CGWarpMouseCursorPosition + re-associates the cursor (exactly like the Swift
     // overlay), which confines reliably on multi-monitor setups.
     extern void MacNative_confineCursorToScreen(WId win);  // implemented in MacNative.mm
-    MacNative_confineCursorToScreen(winId());
+    if (QGuiApplication::platformName() == QLatin1String("cocoa"))
+        MacNative_confineCursorToScreen(winId());
 #else
     const QRect b = m_screen->geometry();
     QPoint cur = QCursor::pos();
@@ -1103,6 +1216,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
     // Start a fresh dirty-rect cache for this gesture. Where a drag begins from
     // existing geometry (resize / move selection / move existing text) we seed it
     // below with the pre-drag bounds so the FIRST move erases the old position.
+    m_lastSelection.reset();
     m_lastPaintedDirty = QRect();
 
     // A click anywhere on the overlay while a colour/background swatch popup is
@@ -1136,12 +1250,12 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
                 m_dragMode = DragMode::RotateText;
                 m_textRotateStartAngle = a.rotation;
                 m_textRotateStartPointerAngle = std::atan2(p.y() - c.y(), p.x() - c.x());
-                setCursor(Qt::ClosedHandCursor);
+                applyCursor(Qt::ClosedHandCursor);
             } else {
                 m_dragMode = DragMode::ResizeText;
                 m_textResizeStartSize = a.fontSize;
                 m_textResizeStartPoint = p;
-                setCursor(overlayCrosshair(devicePixelRatioF()));
+                applyCursor(overlayCrosshair(devicePixelRatioF()));
             }
             beginCustomCursorDrag();
             // Seed the dirty-rect cache with the freshly-committed text's bounds
@@ -1161,7 +1275,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
                 m_dragMode = DragMode::Resize;
                 m_dragHandle = *h;
                 m_selectionAtDragStart = sel;
-                setCursor(resizeCursorFor(*h));
+                applyCursor(resizeCursorFor(*h));
                 beginCustomCursorDrag();
                 m_lastPaintedDirty = currentDragBounds();   // seed: erase old pos on 1st move
                 return;
@@ -1169,7 +1283,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
             if (sel.contains(p)) {
                 m_dragMode = DragMode::MoveSelection;
                 m_selectionAtDragStart = sel;
-                setCursor(Qt::ClosedHandCursor);   // grabbed the selection
+                applyCursor(Qt::ClosedHandCursor);   // grabbed the selection
                 beginCustomCursorDrag();
                 m_lastPaintedDirty = currentDragBounds();   // seed: erase old pos on 1st move
                 return;
@@ -1193,21 +1307,21 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
                         const QPointF c = textCenter(a);
                         m_textRotateStartAngle = a.rotation;
                         m_textRotateStartPointerAngle = std::atan2(p.y() - c.y(), p.x() - c.x());
-                        setCursor(Qt::ClosedHandCursor);
+                        applyCursor(Qt::ClosedHandCursor);
                         beginCustomCursorDrag();
                         handled = true;
                     } else if (resizeHandleLocal(a).adjusted(-4, -4, 4, 4).contains(lp)) {
                         m_dragMode = DragMode::ResizeText;
                         m_textResizeStartSize = a.fontSize;
                         m_textResizeStartPoint = p;
-                        setCursor(overlayCrosshair(devicePixelRatioF()));
+                        applyCursor(overlayCrosshair(devicePixelRatioF()));
                         beginCustomCursorDrag();
                         handled = true;
                     } else if (textLocalRect(a).adjusted(-3, -3, 3, 3).contains(lp)) {
                         m_dragMode = DragMode::MoveText;   // body -> move
                         m_textMoveStartOrigin = a.start;
                         m_dragStart = p;
-                        setCursor(Qt::ClosedHandCursor);
+                        applyCursor(Qt::ClosedHandCursor);
                         beginCustomCursorDrag();
                         handled = true;
                     }
@@ -1220,7 +1334,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent* e) {
                     m_dragMode = DragMode::MoveText;
                     m_textMoveStartOrigin = m_annotations[*idx].start;
                     m_dragStart = p;
-                    setCursor(Qt::ClosedHandCursor);
+                    applyCursor(Qt::ClosedHandCursor);
                     beginCustomCursorDrag();
                     updateTextInspector();
                     m_lastPaintedDirty = currentDragBounds();   // seed for 1st move
@@ -1288,7 +1402,7 @@ void OverlayWindow::mouseMoveEvent(QMouseEvent* e) {
         }
         break;
     case DragMode::MoveSelection: {
-        setCursor(Qt::ClosedHandCursor);
+        applyCursor(Qt::ClosedHandCursor);
         const qreal dx = p.x() - m_dragStart.x(), dy = p.y() - m_dragStart.y();
         QRectF moved = m_selectionAtDragStart.translated(dx, dy);
         qreal ox = std::min(std::max<qreal>(0, moved.left()), width() - moved.width());
@@ -1298,7 +1412,7 @@ void OverlayWindow::mouseMoveEvent(QMouseEvent* e) {
         break;
     }
     case DragMode::Resize:
-        setCursor(resizeCursorFor(m_dragHandle));
+        applyCursor(resizeCursorFor(m_dragHandle));
         m_selection = resized(m_selectionAtDragStart, m_dragHandle, p);
         break;
     case DragMode::Draw:
@@ -1312,7 +1426,7 @@ void OverlayWindow::mouseMoveEvent(QMouseEvent* e) {
         break;
     case DragMode::ResizeText:
         if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
-            setCursor(overlayCrosshair(devicePixelRatioF()));
+            applyCursor(overlayCrosshair(devicePixelRatioF()));
             const qreal dy = p.y() - m_textResizeStartPoint.y();   // drag down = larger
             m_annotations[*m_activeTextIndex].fontSize = std::max<qreal>(8, m_textResizeStartSize + dy);
             updateTextInspector();
@@ -1321,7 +1435,7 @@ void OverlayWindow::mouseMoveEvent(QMouseEvent* e) {
     case DragMode::MoveText:
         if (m_activeTextIndex && *m_activeTextIndex < m_annotations.size()) {
             const int idx = *m_activeTextIndex;
-            setCursor(Qt::ClosedHandCursor);
+            applyCursor(Qt::ClosedHandCursor);
             const qreal dx = p.x() - m_dragStart.x(), dy = p.y() - m_dragStart.y();
             QPointF newStart(m_textMoveStartOrigin.x() + dx, m_textMoveStartOrigin.y() + dy);
             // Snap text center to selection center (threshold 6).
@@ -1359,7 +1473,9 @@ void OverlayWindow::mouseMoveEvent(QMouseEvent* e) {
     if (m_dragMode == DragMode::NewSelection ||
         m_dragMode == DragMode::MoveSelection ||
         m_dragMode == DragMode::Resize) {
-        confineCursorToScreen();
+        // Only near or past the edge, which is the only place it can do anything:
+        // the check itself is a window-server round trip on macOS.
+        if (!QRectF(rect()).adjusted(3, 3, -3, -3).contains(p)) confineCursorToScreen();
     }
 
     // Toolbar follows the selection while it moves/resizes. The toolbar is a
@@ -1420,6 +1536,7 @@ void OverlayWindow::mouseReleaseEvent(QMouseEvent* e) {
     m_pendingBeganSelection = false;   // gesture ended; no deferred emit pending
     m_snapGuideV = false; m_snapGuideH = false;
     m_lastPaintedDirty = QRect();   // gesture over: drop the dirty-rect cache
+    m_lastSelection.reset();
 
     if (m_selection && m_selection->width() > 4 && m_selection->height() > 4) {
         showToolbar(*m_selection);
@@ -1431,7 +1548,7 @@ void OverlayWindow::mouseReleaseEvent(QMouseEvent* e) {
 
     // After release, restore the open hand if hovering over the selection.
     if (m_tool == Tool::Select && m_selection && m_selection->contains(up)) {
-        setCursor(Qt::OpenHandCursor);
+        applyCursor(Qt::OpenHandCursor);
     } else {
         updateHoverCursor(up);
     }
@@ -1512,22 +1629,27 @@ void OverlayWindow::hideToolbar() {
 
 void OverlayWindow::positionToolbar(const QRectF& sel) {
     if (!m_toolbar) return;
-    const QSizeF barSize = m_toolbar->size();
+    const QSizeF bar = m_toolbar->size();
     const qreal gap = 8;
-    QPointF origin(sel.left(), sel.bottom() + gap);   // default: below the area
+    const qreal x = std::min(std::max<qreal>(0, sel.left()), width() - bar.width());
 
-    const bool fitsBelow = origin.y() + barSize.height() <= height();
-    if (!fitsBelow) {
-        const qreal above = sel.top() - barSize.height() - gap;
-        if (above >= 0) {
-            origin.setY(above);                       // above the area
-        } else {
-            origin.setY(sel.bottom() - barSize.height() - gap);  // inside, near bottom
-        }
-    }
-    origin.setX(std::min(std::max<qreal>(0, origin.x()), width() - barSize.width()));
-    origin.setY(std::min(std::max<qreal>(0, origin.y()), height() - barSize.height()));
-    m_toolbar->move(static_cast<int>(origin.x()), static_cast<int>(origin.y()));
+    const auto usable = [&](qreal y) {
+        return y >= 0 && y + bar.height() <= height() && clearsNotch(QRectF(QPointF(x, y), bar));
+    };
+    const qreal below  = sel.bottom() + gap;
+    const qreal above  = sel.top() - bar.height() - gap;
+    const qreal inside = sel.bottom() - bar.height() - gap;
+
+    // Below, then above, then inside near the bottom edge. Each spot must also clear
+    // the notch: with a tall selection the "above" slot lands right under it, and a
+    // toolbar there cannot be seen or clicked.
+    qreal y;
+    if (usable(below))       y = below;
+    else if (usable(above))  y = above;
+    else if (usable(inside)) y = inside;
+    else                     y = belowNotch();
+    y = std::min(std::max<qreal>(0, y), height() - bar.height());
+    m_toolbar->move(static_cast<int>(x), static_cast<int>(y));
 }
 
 void OverlayWindow::animateToolbarIn() {
@@ -1768,6 +1890,7 @@ void OverlayWindow::positionEditControls() {
     qreal y = f.bottom() + 6;   // (maxY + 6) — below the field, +Y down
     x = std::min<qreal>(std::max<qreal>(0, x), width() - m_editControls->width());
     y = std::min<qreal>(std::max<qreal>(0, y), height() - m_editControls->height());
+    if (!clearsNotch(QRectF(QPointF(x, y), QSizeF(m_editControls->size())))) y = belowNotch();
     m_editControls->move(static_cast<int>(x), static_cast<int>(y));
 }
 
@@ -1844,6 +1967,7 @@ void OverlayWindow::positionAlignmentControls() {
     qreal y = f.top() - m_alignControls->height() - 6;   // above the field
     x = std::min<qreal>(std::max<qreal>(0, x), width() - m_alignControls->width());
     y = std::max<qreal>(0, y);
+    if (!clearsNotch(QRectF(QPointF(x, y), QSizeF(m_alignControls->size())))) y = belowNotch();
     m_alignControls->move(static_cast<int>(x), static_cast<int>(y));
 }
 
@@ -2080,9 +2204,11 @@ void OverlayWindow::positionTextPanel() {
     qreal x = box.center().x() - sz.width() / 2.0;
     // Sit clear of the top-right rotate handle (which hangs ~12px above the block).
     qreal y = box.top() - sz.height() - 22;       // above the block
-    if (y < 0) y = box.bottom() + 22;             // no room above -> below the resize handle
     x = std::min<qreal>(std::max<qreal>(0, x), width() - sz.width());
+    if (y < 0 || !clearsNotch(QRectF(QPointF(x, y), sz)))
+        y = box.bottom() + 22;                    // no room above -> below the resize handle
     y = std::min<qreal>(std::max<qreal>(0, y), height() - sz.height());
+    if (!clearsNotch(QRectF(QPointF(x, y), sz))) y = belowNotch();
     m_textPanel->move(static_cast<int>(x), static_cast<int>(y));
 }
 
@@ -2293,7 +2419,7 @@ QImage OverlayWindow::renderOutput() const {
     // "Downscale to standard size": deliver at 1x. Rendering at full resolution
     // first and scaling once at the end also keeps annotation edges cleaner than
     // drawing them straight into a 1x canvas.
-    if (Settings::instance().downscaleRetina() && s > 1.0) {
+    if (m_downscale && s > 1.0) {
         const QSize target(std::max(1, qRound(src.width() / s)),
                            std::max(1, qRound(src.height() / s)));
         out = out.scaled(target, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
@@ -2329,46 +2455,19 @@ void OverlayWindow::copyToClipboard() {
     finish();
 }
 
-void OverlayWindow::saveToFile() {
-    LIGHTGET_OUTPUT_POOL_BARRIER;
-    if (m_textEditor) commitTextEditing();
-    const QImage img = renderOutput();
-    if (img.isNull()) return;
+namespace {
 
-    // Silent save to a configured folder, plus clipboard.
-    const auto folder = Settings::instance().saveFolderPath();
-    if (folder) {
-        // A deleted/renamed/unmounted/read-only save folder used to lose the
-        // screenshot silently: the write failed, the overlay closed as if saved,
-        // and the only copy was the clipboard (overwritten by the next copy).
-        // Make the directory if missing, and only treat it as done when the write
-        // actually succeeds — otherwise fall through to the file dialog so the
-        // user can still save it somewhere and is told what happened.
-        QDir().mkpath(*folder);
-        const QString url = makeSaveUrl(*folder);
-        if (img.save(url, "PNG")) {
-            writeToClipboard(img);
-            finish();
-            return;
-        }
-        // Save failed — clipboard still holds it; drop to the dialog below.
-        writeToClipboard(img);
-    }
+// Saves still encoding on a worker. Quitting waits for them (see saveInBackground).
+std::atomic<int> g_savesInFlight{0};
 
-    // No folder set -> file dialog with the default macOS-style name.
+// The file dialog, on the monitor the selection was made on. Falls back to the
+// primary screen if that monitor has gone. Self-contained, because by the time a
+// background save fails the overlay no longer exists.
+// Returns true if the user went ahead (saved, or tried to and was told it failed).
+bool promptSaveDialog(const QImage& img, const QString& fileName, QScreen* captureScreen) {
     const QString suggested = QDir(QStandardPaths::writableLocation(
                                       QStandardPaths::PicturesLocation))
-                                  .filePath(defaultScreenshotName());
-
-    // Remember the capture screen BEFORE tearing down the overlay, so we can put
-    // the save dialog on the SAME monitor the selection was made on. Falls back
-    // to this widget's current screen, then the primary screen.
-    QScreen* captureScreen = m_screen;
-    if (!captureScreen) captureScreen = screen();
-    if (!captureScreen) captureScreen = QGuiApplication::primaryScreen();
-
-    // CRITICAL: tear down the shield overlay first so the dialog is visible.
-    finish();
+                                  .filePath(fileName);
 
     // Build an explicit dialog (not the static helper) so we can place it on the
     // capture screen before showing it. Keeps the PNG filter + default name.
@@ -2389,20 +2488,82 @@ void OverlayWindow::saveToFile() {
                     g.y() + (g.height() - sz.height()) / 2);
     }
 
-    if (dialog.exec() == QDialog::Accepted) {
-        const QStringList files = dialog.selectedFiles();
-        if (!files.isEmpty() && !files.first().isEmpty()) {
-            if (img.save(files.first(), "PNG")) {
-                writeToClipboard(img);
-            } else {
-                // Don't pretend it saved. The clipboard still has the image.
-                writeToClipboard(img);
-                QMessageBox::warning(nullptr, Loc::t(QStringLiteral("save.failed.title")),
-                                     Loc::t(QStringLiteral("save.failed.body"))
-                                         .arg(files.first()));
-            }
-        }
+    if (dialog.exec() != QDialog::Accepted) return false;
+    const QStringList files = dialog.selectedFiles();
+    if (files.isEmpty() || files.first().isEmpty()) return false;
+    if (!img.save(files.first(), "PNG")) {
+        // Don't pretend it saved. The clipboard still has the image.
+        QMessageBox::warning(nullptr, Loc::t(QStringLiteral("save.failed.title")),
+                             Loc::t(QStringLiteral("save.failed.body")).arg(files.first()));
     }
+    return true;
+}
+
+bool writePng(const QImage& img, const QString& folder, const QString& path) {
+    QDir().mkpath(folder);
+    // QSaveFile writes beside the target and renames on commit, so an interrupted
+    // save can never leave a truncated PNG with the real name.
+    QSaveFile file(path);
+    file.setDirectWriteFallback(true);
+    return file.open(QIODevice::WriteOnly) && img.save(&file, "PNG") && file.commit();
+}
+
+// PNG encoding takes hundreds of milliseconds on a Retina capture and far longer on
+// a loaded machine, and doing it on the GUI thread left the frozen overlay on screen
+// for all of that time after the user had already chosen to save. The overlay closes
+// at once; if the write then fails (deleted, full or read-only folder) the user gets
+// the dialog, so the screenshot is still never lost silently.
+void saveInBackground(const QImage& img, const QString& folder, const QString& path,
+                      const QString& fileName, QScreen* captureScreen) {
+    static const bool waitsOnQuit = [] {
+        QObject::connect(qApp, &QCoreApplication::aboutToQuit, qApp, [] {
+            for (int i = 0; i < 500 && g_savesInFlight.load() > 0; ++i)
+                QThread::msleep(10);
+        });
+        return true;
+    }();
+    Q_UNUSED(waitsOnQuit);
+
+    ++g_savesInFlight;
+    QPointer<QScreen> screen(captureScreen);
+    std::thread([img, folder, path, fileName, screen] {
+        if (!writePng(img, folder, path)) {
+            QMetaObject::invokeMethod(
+                qApp, [img, fileName, screen] { promptSaveDialog(img, fileName, screen.data()); },
+                Qt::QueuedConnection);
+        }
+        --g_savesInFlight;
+    }).detach();
+}
+
+}  // namespace
+
+void OverlayWindow::saveToFile() {
+    LIGHTGET_OUTPUT_POOL_BARRIER;
+    if (m_textEditor) commitTextEditing();
+    const QImage img = renderOutput();
+    if (img.isNull()) return;
+
+    // Remember the capture screen BEFORE tearing down the overlay, so a dialog can
+    // open on the SAME monitor the selection was made on.
+    QScreen* captureScreen = m_screen;
+    if (!captureScreen) captureScreen = screen();
+    if (!captureScreen) captureScreen = QGuiApplication::primaryScreen();
+
+    // Silent save to a configured folder, plus clipboard.
+    if (const auto folder = Settings::instance().saveFolderPath()) {
+        writeToClipboard(img);
+        const QString path = makeSaveUrl(*folder);
+        finish();
+        saveInBackground(img, *folder, path, defaultScreenshotName(), captureScreen);
+        return;
+    }
+
+    // CRITICAL: tear down the shield overlay first so the dialog is visible.
+    const QString fileName = defaultScreenshotName();
+    finish();
+    // Cancelling must leave whatever the user had on the clipboard alone.
+    if (promptSaveDialog(img, fileName, captureScreen)) writeToClipboard(img);
 }
 
 QString OverlayWindow::defaultScreenshotName() const {
@@ -2429,4 +2590,419 @@ QString OverlayWindow::makeSaveUrl(const QString& folder) const {
 
 void OverlayWindow::finish() {
     emit finished();
+}
+
+// ---------------------------------------------------------------------------
+// Hidden harness: --bench-overlay
+//
+// Drives a REAL OverlayWindow through synthetic mouse gestures and reports the
+// cost of each frame, so a change to the paint path can be judged by numbers
+// instead of by feel. Run it offscreen on a Retina-sized screen:
+//
+//   QT_QPA_PLATFORM=offscreen QT_SCALE_FACTOR=2 LightGet --bench-overlay
+//
+// It also checks repaint CORRECTNESS: after each gesture the backing store, built
+// up from nothing but partial repaints, must match a full repaint pixel for pixel.
+// A mismatch means a gesture's damage region missed something it changed, i.e. a
+// ghost the user would see.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct BenchStats { double avg = 0, p95 = 0, worst = 0; };
+
+BenchStats summarize(QVector<double> v) {
+    BenchStats s;
+    if (v.isEmpty()) return s;
+    std::sort(v.begin(), v.end());
+    for (double d : v) s.avg += d;
+    s.avg /= v.size();
+    s.p95 = v[int((v.size() - 1) * 0.95)];
+    s.worst = v.last();
+    return s;
+}
+
+void sendMouse(QWidget* w, QEvent::Type t, const QPointF& p, Qt::MouseButtons held) {
+    const Qt::MouseButton b = (t == QEvent::MouseMove) ? Qt::NoButton : Qt::LeftButton;
+    QMouseEvent e(t, p, w->mapToGlobal(p), b, held, Qt::NoModifier);
+    QCoreApplication::sendEvent(w, &e);
+}
+
+void pump() {
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::UpdateRequest);
+    QCoreApplication::processEvents();
+}
+
+// Compares what partial repaints accumulated with what a full repaint produces.
+int ghostPixels(OverlayWindow* w) {
+    pump();
+    auto* dev = w->backingStore() ? w->backingStore()->paintDevice() : nullptr;
+    auto* store = dynamic_cast<QImage*>(dev);
+    if (!store) return -1;
+    const QImage have = store->convertToFormat(QImage::Format_RGB32);
+    const QImage want = w->grab().toImage().convertToFormat(QImage::Format_RGB32);
+    if (have.size() != want.size()) return -2;
+    int bad = 0;
+    QRect box;
+    for (int y = 0; y < have.height(); ++y) {
+        const auto* a = reinterpret_cast<const QRgb*>(have.constScanLine(y));
+        const auto* b = reinterpret_cast<const QRgb*>(want.constScanLine(y));
+        for (int x = 0; x < have.width(); ++x)
+            // Off by one is rounding between surface formats, invisible and harmless.
+            if (qAbs(qRed(a[x]) - qRed(b[x])) > 2 || qAbs(qGreen(a[x]) - qGreen(b[x])) > 2 ||
+                qAbs(qBlue(a[x]) - qBlue(b[x])) > 2) {
+                ++bad;
+                box |= QRect(x, y, 1, 1);
+            }
+    }
+    if (bad && !qEnvironmentVariableIsEmpty("LIGHTGET_BENCH_DUMP")) {
+        static int n = 0;
+        const QRect c = box.adjusted(-60, -60, 60, 60) & have.rect();
+        const QString dir = qEnvironmentVariable("LIGHTGET_BENCH_DUMP");
+        have.copy(c).save(QStringLiteral("%1/ghost%2_have.png").arg(dir).arg(n));
+        want.copy(c).save(QStringLiteral("%1/ghost%2_want.png").arg(dir).arg(n));
+        ++n;
+    }
+    if (bad) {
+        const auto* bar = w->findChild<ToolbarView*>();
+        fprintf(stdout, "  ghost bounds (device px): %d,%d %dx%d  toolbar %d,%d %dx%d (logical)\n",
+                box.x(), box.y(), box.width(), box.height(),
+                bar ? bar->x() : -1, bar ? bar->y() : -1,
+                bar ? bar->width() : -1, bar ? bar->height() : -1);
+    }
+    return bad;
+}
+
+}  // namespace
+
+void LightGet_warmOverlayStack();
+
+int LightGet_runOverlayBench() {
+    if (!qEnvironmentVariableIsEmpty("LIGHTGET_BENCH_WARM")) {
+        QElapsedTimer warm;
+        warm.start();
+        LightGet_warmOverlayStack();
+        fprintf(stdout, "%-30s %8.2f ms\n", "warm-up", warm.nsecsElapsed() / 1e6);
+    }
+
+    QScreen* screen = QGuiApplication::primaryScreen();
+    const qreal dpr = screen->devicePixelRatio();
+    const QSize px = screen->size() * dpr;
+
+    // Screenshot-like content: smooth gradients with detail, in the format the
+    // platform grab produces. Never all one colour, so a blit cannot cheat.
+    QImage shot(px, QImage::Format_RGB32);
+    for (int y = 0; y < shot.height(); ++y) {
+        auto* row = reinterpret_cast<QRgb*>(shot.scanLine(y));
+        for (int x = 0; x < shot.width(); ++x)
+            row[x] = qRgb((x / 7) & 255, (y / 5) & 255, ((x ^ y) / 3) & 255);
+    }
+    shot.setDevicePixelRatio(dpr);
+
+    fprintf(stdout, "screen %dx%d @%.2f = %dx%d px\n", screen->size().width(),
+            screen->size().height(), dpr, px.width(), px.height());
+
+    QElapsedTimer clock;
+    clock.start();
+    auto* w = new OverlayWindow(shot, screen);
+    const double msCtor = clock.nsecsElapsed() / 1e6;
+    clock.restart();
+    w->show();
+    pump();
+    const double msFirst = clock.nsecsElapsed() / 1e6;
+    fprintf(stdout, "%-30s %8.2f ms\n%-30s %8.2f ms\n", "construct", msCtor,
+            "show + first paint", msFirst);
+    fprintf(stdout, "%-30s %s\n", "backdrop shares screenshot",
+            w->m_backdrop.toImage().constBits() == w->m_screenshot.constBits() ? "yes" : "NO");
+
+    int failures = 0;
+    const auto report = [&](const char* name, const QVector<double>& frames) {
+        const BenchStats s = summarize(frames);
+        const int ghost = ghostPixels(w);
+        if (ghost != 0) ++failures;
+        fprintf(stdout, "%-30s avg %7.2f  p95 %7.2f  max %7.2f ms   ghost px %d\n", name,
+                s.avg, s.p95, s.worst, ghost);
+        fflush(stdout);
+    };
+    const auto frame = [&](const QPointF& p, Qt::MouseButtons held) {
+        QElapsedTimer t;
+        t.start();
+        sendMouse(w, QEvent::MouseMove, p, held);
+        pump();
+        return t.nsecsElapsed() / 1e6;
+    };
+
+    const QSizeF sz = w->size();
+    QVector<double> f;
+
+    // 1. Drawing a new selection that grows to nearly the whole screen.
+    const QPointF a(60, 90);
+    sendMouse(w, QEvent::MouseButtonPress, a, Qt::LeftButton);
+    for (int i = 1; i <= 150; ++i) {
+        const qreal t = i / 150.0;
+        f << frame(a + QPointF((sz.width() - 180) * t, (sz.height() - 260) * t), Qt::LeftButton);
+    }
+    report("new selection (growing)", f);
+    clock.restart();
+    sendMouse(w, QEvent::MouseButtonRelease, a + QPointF(sz.width() - 180, sz.height() - 260),
+              Qt::NoButton);
+    pump();
+    fprintf(stdout, "%-30s %8.2f ms\n", "toolbar appears", clock.nsecsElapsed() / 1e6);
+    report("after release", {});
+
+    // 2. Resizing that large selection by its bottom-right handle, toolbar following.
+    const QRectF large = *w->m_selection;
+    f.clear();
+    sendMouse(w, QEvent::MouseButtonPress, large.bottomRight(), Qt::LeftButton);
+    for (int i = 1; i <= 150; ++i) {
+        const qreal d = 60.0 * std::sin(i / 12.0);
+        f << frame(large.bottomRight() + QPointF(d, d * 0.6), Qt::LeftButton);
+    }
+    report("resize large selection", f);
+    sendMouse(w, QEvent::MouseButtonRelease, large.bottomRight(), Qt::NoButton);
+    pump();
+
+    // 3. Hovering (no button held): the cursor is being worked out on every move.
+    f.clear();
+    for (int i = 1; i <= 150; ++i)
+        f << frame(QPointF(10 + i * 8, 10 + i * 5), Qt::NoButton);
+    report("hover", f);
+
+    // 4. Moving a medium selection around, including up under the notch.
+    w->m_selection = QRectF(300, 300, 700, 450);
+    w->showToolbar(*w->m_selection);
+    w->update();
+    pump();
+    f.clear();
+    const QPointF grab = w->m_selection->center();
+    sendMouse(w, QEvent::MouseButtonPress, grab, Qt::LeftButton);
+    for (int i = 1; i <= 150; ++i) {
+        const qreal t = i / 12.0;
+        f << frame(grab + QPointF(200 * std::sin(t), 230 * std::cos(t)), Qt::LeftButton);
+    }
+    report("move selection", f);
+    sendMouse(w, QEvent::MouseButtonRelease, grab, Qt::NoButton);
+    pump();
+
+    // 5. A pen stroke across the selection, with earlier annotations on screen.
+    w->m_selection = QRectF(100, 100, sz.width() - 300, sz.height() - 300);
+    w->showToolbar(*w->m_selection);
+    w->onSelectTool(Tool::Pen);
+    w->update();
+    pump();
+    f.clear();
+    const QPointF pen(200, 200);
+    sendMouse(w, QEvent::MouseButtonPress, pen, Qt::LeftButton);
+    for (int i = 1; i <= 300; ++i)
+        f << frame(pen + QPointF(i * 3.0, 120 * std::sin(i / 15.0) + 200), Qt::LeftButton);
+    // Reported after the release: mid-stroke, the antialiased joints of a growing
+    // polyline legitimately differ by a shade from a fresh draw of the whole path.
+    sendMouse(w, QEvent::MouseButtonRelease, pen, Qt::NoButton);
+    report("pen stroke", f);
+
+    // Notch: walk selections through every placement and require that the toolbar
+    // never ends up under the housing. Same geometry as a 16" MacBook Pro.
+    {
+        const QRect notch(771, 0, 186, 32);
+        const QRect keepOut = notch.adjusted(-6, 0, 6, 6);
+        w->m_notch = notch;
+        const int H = int(sz.height());
+        int violations = 0, checked = 0;
+        const auto check = [&](const QRectF& sel) {
+            w->m_selection = sel;
+            w->showToolbar(sel);
+            pump();
+            ++checked;
+            if (w->m_toolbar->geometry().intersects(keepOut)) {
+                ++violations;
+                fprintf(stdout, "  under notch: selection %.0f,%.0f %.0fx%.0f -> toolbar y=%d\n",
+                        sel.x(), sel.y(), sel.width(), sel.height(), w->m_toolbar->y());
+            }
+            if (!w->rect().contains(w->m_toolbar->geometry())) {
+                ++violations;
+                fprintf(stdout, "  off screen: selection %.0f,%.0f %.0fx%.0f\n", sel.x(), sel.y(),
+                        sel.width(), sel.height());
+            }
+            QFontMetricsF fm(selectionLabelFont());
+            const QPointF o = w->selectionLabelOrigin(sel, QSizeF(100, fm.height()));
+            if (!w->clearsNotch(QRectF(o, QSizeF(100, fm.height())))) {
+                ++violations;
+                fprintf(stdout, "  label under notch: selection %.0f,%.0f\n", sel.x(), sel.y());
+            }
+        };
+        // The reported case: tall selection sliding up towards the notch.
+        for (int top = 0; top <= 200; top += 4)
+            for (int left : {0, 300, 700, 800, 900, 1200})
+                for (int h : {60, 300, 900, H - top - 2, H - top - 60})
+                    if (h > 8) check(QRectF(left, top, 500, h));
+        fprintf(stdout, "%-30s %d placements, %d violations\n", "notch", checked, violations);
+        if (violations) ++failures;
+        w->m_notch = QRect();
+    }
+
+    // 6. Producing the output image for a large selection.
+    clock.restart();
+    const QImage out = w->renderOutput();
+    fprintf(stdout, "%-30s %8.2f ms  (%dx%d)\n", "renderOutput", clock.nsecsElapsed() / 1e6,
+            out.width(), out.height());
+    clock.restart();
+    QBuffer sink;
+    sink.open(QIODevice::WriteOnly);
+    out.save(&sink, "PNG");
+    fprintf(stdout, "%-30s %8.2f ms  (%lld KB)\n", "PNG encode", clock.nsecsElapsed() / 1e6,
+            static_cast<long long>(sink.size() / 1024));
+
+    // The background save, end to end: returns at once, file appears, decodes equal.
+    {
+        const QString dir = QDir::tempPath() + QStringLiteral("/lightget-bench-save");
+        const QString path = dir + QStringLiteral("/out.png");
+        QFile::remove(path);
+        clock.restart();
+        saveInBackground(out, dir, path, QStringLiteral("out.png"), screen);
+        const double msCall = clock.nsecsElapsed() / 1e6;
+        while (g_savesInFlight.load() > 0) QThread::msleep(2);
+        const QImage back(path);
+        const bool same = back.convertToFormat(QImage::Format_RGB32) ==
+                          out.convertToFormat(QImage::Format_RGB32);
+        fprintf(stdout, "%-30s %8.2f ms blocking, done after %.0f ms, round trip %s\n",
+                "background save", msCall, clock.nsecsElapsed() / 1e6, same ? "ok" : "BROKEN");
+        if (!same) ++failures;
+        QDir(dir).removeRecursively();
+    }
+
+    w->hide();
+    delete w;
+    fprintf(stdout, failures ? "RESULT: %d gesture(s) left ghosts\n" : "RESULT: no ghosts\n",
+            failures);
+    return failures ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
+// Hidden harness: --bench-live
+//
+// The offscreen bench measures painting, but not what the window system does with
+// the result. This one opens the real overlay on the real display for a few
+// seconds, feeds it mouse moves on a timer as a selection is dragged, and reports
+// how many frames actually reached the screen. It closes itself and takes no input
+// from the user. Shows a synthetic picture, so no capture permission is involved.
+// ---------------------------------------------------------------------------
+int LightGet_runLiveBench() {
+    QScreen* screen = QGuiApplication::primaryScreen();
+    const qreal dpr = screen->devicePixelRatio();
+    QImage shot(screen->size() * dpr, QImage::Format_RGB32);
+    for (int y = 0; y < shot.height(); ++y) {
+        auto* row = reinterpret_cast<QRgb*>(shot.scanLine(y));
+        for (int x = 0; x < shot.width(); ++x)
+            row[x] = qRgb((x / 7) & 255, (y / 5) & 255, ((x ^ y) / 3) & 255);
+    }
+    shot.setDevicePixelRatio(dpr);
+
+    // The production capture path, so its format and buffer sharing are checked too.
+    QElapsedTimer grabTimer;
+    grabTimer.start();
+    ScreenCaptureError grabError = ScreenCaptureError::None;
+    const CapturedScreen real = ScreenCapture::captureDisplayUnderCursor(grabError);
+    fprintf(stdout, "real capture: %.1f ms (%dx%d, format %d, alpha %d)\n",
+            grabTimer.nsecsElapsed() / 1e6, real.image.width(), real.image.height(),
+            int(real.image.format()), real.image.hasAlphaChannel() ? 1 : 0);
+
+    auto* w = new OverlayWindow(shot, screen);
+    w->setAttribute(Qt::WA_ShowWithoutActivating, true);
+    fprintf(stdout, "notch rect: %d,%d %dx%d\n", w->m_notch.x(), w->m_notch.y(),
+            w->m_notch.width(), w->m_notch.height());
+
+    QElapsedTimer sinceShow;
+    sinceShow.start();
+    w->show();
+    w->raise();
+    w->applyShieldLevel();
+    while (w->m_benchPaints == 0 && sinceShow.elapsed() < 2000)
+        QCoreApplication::processEvents();
+    fprintf(stdout, "show -> first paint done: %.1f ms\n", sinceShow.nsecsElapsed() / 1e6);
+
+    const QSizeF sz = w->size();
+    const QPointF a(60, 90);
+    int moves = 0;
+    QEventLoop loop;
+    QTimer ticker;
+    QElapsedTimer run;
+    int phase = 0;
+    int phaseStartPaints = 0;
+
+    const auto startPhase = [&](const char* name) {
+        Q_UNUSED(name);
+        phaseStartPaints = w->m_benchPaints;
+        w->m_benchPaintNs = 0;
+        run.restart();
+    };
+    const auto endPhase = [&](const char* name) {
+        const int frames = w->m_benchPaints - phaseStartPaints;
+        const double secs = run.nsecsElapsed() / 1e9;
+        fprintf(stdout, "%-26s %6.1f fps   paint avg %6.2f ms\n", name, frames / secs,
+                frames ? (w->m_benchPaintNs / 1e6) / frames : 0.0);
+        fflush(stdout);
+    };
+
+    QTimer::singleShot(400, w, [&] {
+        sendMouse(w, QEvent::MouseButtonPress, a, Qt::LeftButton);
+        startPhase("big selection growing");
+        ticker.start(8);   // ~120 Hz, like a real mouse
+    });
+    QObject::connect(&ticker, &QTimer::timeout, w, [&] {
+        ++moves;
+        const qreal t = std::fmod(moves / 240.0, 1.0);
+        if (phase == 0) {
+            sendMouse(w, QEvent::MouseMove,
+                      a + QPointF((sz.width() - 180) * t, (sz.height() - 260) * t), Qt::LeftButton);
+            if (run.elapsed() > 2000) {
+                endPhase("big selection growing");
+                phase = 1;
+                moves = 0;
+                startPhase("small selection growing");
+            }
+        } else if (phase == 1) {
+            sendMouse(w, QEvent::MouseMove, a + QPointF(40 + 200 * t, 40 + 150 * t), Qt::LeftButton);
+            if (run.elapsed() > 1500) {
+                endPhase("small selection growing");
+                loop.quit();
+            }
+        }
+    });
+    QTimer::singleShot(6000, &loop, &QEventLoop::quit);   // hard stop, whatever happens
+    loop.exec();
+    ticker.stop();
+    w->hide();
+    delete w;
+    return 0;
+}
+
+// Run the code the first selection would otherwise run for the first time, at a
+// moment of our choosing. Measured on an M2 Pro: the first size label of a process
+// costs ~130 ms (font lookup and shaping), which is a visible hitch at the very start
+// of a drag, and it is far worse on a machine a game is holding. Nothing here shows a
+// window: the widget is rendered into a pixmap and thrown away.
+void LightGet_warmOverlayStack() {
+    LG_TRACE("warm overlay stack");
+
+    for (QScreen* sc : QGuiApplication::screens())
+        if (sc) (void)overlayCrosshair(sc->devicePixelRatio());
+
+    {
+        QImage img(240, 40, QImage::Format_ARGB32_Premultiplied);
+        img.fill(Qt::transparent);
+        QPainter p(&img);
+        p.setFont(selectionLabelFont());
+        p.setPen(Qt::white);
+        p.drawText(QPointF(4, selectionLabelMetrics().ascent()),
+                   QStringLiteral("0123456789 ×"));
+    }
+
+    {
+        // Style sheets are parsed and every tool glyph drawn on first use.
+        ToolbarView bar(nullptr);
+        bar.rebuild();
+        (void)bar.grab();
+    }
+
+    // The PNG encoder is a plugin, loaded on first save.
+    (void)QImageWriter::supportedImageFormats();
 }

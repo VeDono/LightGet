@@ -110,7 +110,7 @@ target_compile_definitions(LightGet PRIVATE _USE_MATH_DEFINES)
 # "function-style macro" heuristic and get DROPPED if written inline. Routing the
 # value through a set() variable first makes CMake quote it correctly so the full
 # "Cross-platform (Qt 6)" reaches the compiler (verified in the generated build).
-set(LIGHTGET_VERSION "1.0.25" CACHE STRING "Product version string")
+set(LIGHTGET_VERSION "1.0.26" CACHE STRING "Product version string")
 set(LIGHTGET_EDITION "Cross-platform (Qt 6)" CACHE STRING "Build edition label")
 target_compile_definitions(LightGet PRIVATE
     LIGHTGET_VERSION="${LIGHTGET_VERSION}"
@@ -138,7 +138,7 @@ if(WIN32)
     target_sources(LightGet PRIVATE src/win/WinNative.cpp)
 
     # RegisterHotKey / WM_HOTKEY, BitBlt/DXGI capture, SetForegroundWindow.
-    target_link_libraries(LightGet PRIVATE user32 gdi32)
+    target_link_libraries(LightGet PRIVATE user32 gdi32 dwmapi)
     # NOMINMAX: windows.h's min/max macros otherwise clash with std::min/max and
     # Qt's numeric_limits use. WIN32_LEAN_AND_MEAN trims the windows.h surface.
     target_compile_definitions(LightGet PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -169,8 +169,8 @@ elseif(APPLE)
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_BUNDLE_NAME "${APP_NAME}"
         MACOSX_BUNDLE_GUI_IDENTIFIER "${BUNDLE_ID}"
-        MACOSX_BUNDLE_BUNDLE_VERSION "26"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.25"
+        MACOSX_BUNDLE_BUNDLE_VERSION "27"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.26"
         MACOSX_BUNDLE_ICON_FILE "AppIcon"
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/Info.plist.in"
     )

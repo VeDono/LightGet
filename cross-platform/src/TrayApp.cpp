@@ -259,7 +259,6 @@ bool appIsDark() {
 // an extern inside an anonymous namespace gets internal linkage and fails to link.
 extern void WinNative_warmUpCapture();
 extern void WinNative_forceOverlayForeground(void* windowHandle);
-extern void LightGet_warmOverlayCursors();
 
 namespace {
 
@@ -301,17 +300,11 @@ void warmUpCaptureStack() {
         (void)probe.winId();   // realise the platform window
     }
 
-    // 3. The crosshair is cached per device pixel ratio; build the ones in use.
-    LightGet_warmOverlayCursors();
-
-    // 4. The PNG encoder lives in a plugin that is not loaded until the first save.
-    (void)QImageWriter::supportedImageFormats();
-
-    // 5. First clipboard access initialises OLE. The object is created; the
+    // 3. First clipboard access initialises OLE. The object is created; the
     //    clipboard's contents are neither read nor altered.
     (void)QGuiApplication::clipboard();
 
-    // 6. The GDI capture path, with a 1x1 blit — see the note in WinNative.cpp.
+    // 4. The GDI capture path, with a 1x1 blit — see the note in WinNative.cpp.
     WinNative_warmUpCapture();
 }
 
@@ -323,6 +316,9 @@ inline void claimForeground(QWidget* w) {
 
 }  // namespace
 #endif
+
+// Implemented in OverlayWindow.cpp (file scope: see the note on externs above).
+extern void LightGet_warmOverlayStack();
 
 TrayApp::TrayApp(QObject* parent) : QObject(parent) {}
 
@@ -370,11 +366,14 @@ void TrayApp::start() {
         if (!QSystemTrayIcon::isSystemTrayAvailable()) openSettings();
     });
 
-#if defined(Q_OS_WIN)
     // Early, but after the tray is up: the point is to be finished long before the
     // user reaches for the shortcut, without competing with startup itself.
-    QTimer::singleShot(2000, this, []() { warmUpCaptureStack(); });
+    QTimer::singleShot(2000, this, []() {
+        LightGet_warmOverlayStack();
+#if defined(Q_OS_WIN)
+        warmUpCaptureStack();
 #endif
+    });
 
     // Automatic update check shortly after launch (opt-out in Settings). Delayed
     // so it never competes with startup work, and silent unless there IS an update.
@@ -536,16 +535,19 @@ void TrayApp::applyHotkey(uint32_t code, uint32_t mods, bool userInitiated) {
 #if defined(Q_OS_WIN)
 // Implemented in win/WinNative.cpp. MUST be declared at file scope: inside an
 // anonymous namespace it would get internal linkage and fail to link.
-extern void WinNative_setCaptureBoost(bool on);
+extern void WinNative_setCaptureBoost(int level);
+extern void WinNative_setWindowCloaked(void* windowHandle, bool cloaked);
+extern void WinNative_paintNow(void* windowHandle);
 #endif
 
 namespace {
-// Raise the process only while a capture is actually on screen, never at rest.
-inline void captureBoost(bool on) {
+// Scheduling priority across a capture: 2 from the keypress until the overlay is up
+// and painted, 1 while it stays on screen, 0 at rest.
+inline void captureBoost(int level) {
 #if defined(Q_OS_WIN)
-    WinNative_setCaptureBoost(on);
+    WinNative_setCaptureBoost(level);
 #else
-    Q_UNUSED(on);
+    Q_UNUSED(level);
 #endif
 }
 } // namespace
@@ -799,7 +801,11 @@ void TrayApp::startCapture() {
     // OR a capture is in flight -> do nothing. m_isCapturing closes the race:
     // it is set synchronously, while m_overlayShown only becomes true once the
     // overlays exist, so a second trigger cannot create a second set.
-    if (m_overlayShown || m_isCapturing) return;
+    if (m_overlayShown || m_isCapturing) {
+        // The keyboard hook has already raised us for what it took to be a new capture.
+        if (m_overlayShown) captureBoost(1);
+        return;
+    }
 
     // Tear the status-item menu down synchronously before grabbing pixels or
     // showing the shield. When a capture is launched from the tray menu the menu
@@ -826,7 +832,7 @@ void TrayApp::startCapture() {
     }
 
     m_isCapturing = true;
-    captureBoost(true);
+    captureBoost(2);
     LG_TRACE("capture");
 
     // Always measured, never written unless something goes wrong: a handful of
@@ -854,7 +860,7 @@ void TrayApp::startCapture() {
 
     if (err != ScreenCaptureError::None || shots.empty()) {
         m_isCapturing = false;
-        captureBoost(false);
+        captureBoost(0);
         presentCaptureError();
         return;
     }
@@ -885,11 +891,23 @@ void TrayApp::startCapture() {
     // Show + raise all overlays, then apply the native shield level once mapped.
     const bool animateDim = Settings::instance().animatedDim();
     for (OverlayWindow* w : m_overlays) {
+#if defined(Q_OS_WIN)
+        // An opaque window that has not painted yet presents an empty surface. Keep it
+        // cloaked (mapped, focusable, but withheld from the compositor) until the first
+        // frame is in, so the capture opens on the frozen screen and never on black.
+        void* const hwnd = reinterpret_cast<void*>(w->winId());
+        WinNative_setWindowCloaked(hwnd, true);
+#endif
         w->show();
         w->raise();
         w->applyShieldLevel();
         // Optional smooth fade-in of the dim layer (default OFF -> instant dim).
         if (animateDim) w->startDimFadeIn();
+#if defined(Q_OS_WIN)
+        WinNative_paintNow(hwnd);
+        if (!w->hasPainted()) w->repaint();
+        WinNative_setWindowCloaked(hwnd, false);
+#endif
     }
 
     msShow = capTimer.elapsed();
@@ -962,12 +980,12 @@ void TrayApp::startCapture() {
                         .arg(m_overlays.size()));
     }
 
-    // NOTE: the boost is deliberately NOT dropped here. The overlay exists but has
-    // not painted yet, and that first paint — backing store, backdrop — is the
-    // heaviest frame of the whole gesture. Releasing it now handed the machine back
-    // to the game exactly one instant too early. closeOverlays() drops it, so it
-    // lasts precisely as long as a capture is on screen, which is what the comment
-    // on WinNative_setCaptureBoost has always claimed.
+    // Keep the boost through the first frames, the heaviest of the gesture, then ease
+    // off to what is enough to stay responsive against a game while the overlay is up.
+    // closeOverlays() drops it entirely.
+    QTimer::singleShot(1500, this, [this]() {
+        if (m_overlayShown) captureBoost(1);
+    });
 }
 
 void TrayApp::onCaptureFinished() {
@@ -975,7 +993,7 @@ void TrayApp::onCaptureFinished() {
     // both guards cleared.
     m_overlayShown = false;
     m_isCapturing = false;
-    captureBoost(false);
+    captureBoost(0);
 }
 
 void TrayApp::presentCaptureError() {

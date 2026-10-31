@@ -52,6 +52,8 @@
 QPixmap LightGet_debugMenuGlyph(int kind, const QColor& color, int side);
 QPixmap LightGet_debugUpdateDialog(bool dark);
 QPixmap LightGet_debugCrosshair(qreal dpr);
+int LightGet_runOverlayBench();
+int LightGet_runLiveBench();
 
 namespace {
 
@@ -269,6 +271,7 @@ int runRenderDump(const QString& dir) {
 // Implemented in win/WinNative.cpp. File scope on purpose -- an extern inside an
 // anonymous namespace gets internal linkage and fails to link.
 extern void WinNative_optOutOfPowerThrottling();
+extern void WinNative_raiseGuiThread();
 #endif
 
 int main(int argc, char** argv) {
@@ -320,6 +323,7 @@ int main(int argc, char** argv) {
     // Tell Windows not to park us at a reduced clock for being a background app;
     // see the note in WinNative.cpp. Harmless no-op before Windows 10 1709.
     WinNative_optOutOfPowerThrottling();
+    WinNative_raiseGuiThread();
 #endif
 
     // Apply the saved Appearance preference to the app color scheme (Qt 6.8):
@@ -352,6 +356,11 @@ int main(int argc, char** argv) {
             return code;   // never reach TrayApp / app.exec()
         }
     }
+
+    if (QCoreApplication::arguments().contains(QStringLiteral("--bench-overlay")))
+        return LightGet_runOverlayBench();
+    if (QCoreApplication::arguments().contains(QStringLiteral("--bench-live")))
+        return LightGet_runLiveBench();
 
     // Hidden diagnostic: "--update-check" asks GitHub for the latest release,
     // prints it next to this build's version, and exits. Verifies the update path
