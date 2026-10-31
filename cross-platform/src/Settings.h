@@ -142,6 +142,14 @@ public:
     // --- Feature flags (default true when absent) ---
     bool showColorPalette() const;           // key "showColors"
     void setShowColorPalette(bool v);
+    // How the toolbar travels when it has to change place around the selection:
+    // "genie" (default), "slide", "spring", "fade" or "off". Unknown values mean "genie".
+    QString toolbarAnimation() const;        // key "toolbarAnimation"
+    void setToolbarAnimation(const QString& v);
+    // May the toolbar stand upright beside the selection when neither above nor
+    // below has room? Off keeps the old fallback of sitting inside the selection.
+    bool toolbarVerticalEnabled() const;     // key "toolbarVertical"
+    void setToolbarVerticalEnabled(bool v);
     bool textAlignmentEnabled() const;       // key "textAlign"
     void setTextAlignmentEnabled(bool v);
     bool textBackgroundEnabled() const;      // key "textBg"

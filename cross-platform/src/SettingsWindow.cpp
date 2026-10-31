@@ -298,6 +298,31 @@ private:
 // dot gets a 1px border (the chip bg supplies contrast for the others). The
 // fixed size is chosen so the resulting chip is the same compact width as a
 // tool chip (ToolGlyph is 36px; this is 40px to fit five dots legibly).
+// Upright toolbar beside a selection frame: the trailing chip of the vertical
+// toolbar row, so the option explains itself.
+class VerticalToolbarGlyph : public QWidget {
+public:
+    explicit VerticalToolbarGlyph(const QColor& frame, QWidget* parent = nullptr)
+        : QWidget(parent), m_frame(frame) {
+        setFixedSize(24, 18);
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    }
+    QSize sizeHint() const override { return QSize(24, 18); }
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(m_frame, 1.2));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(QRectF(1, 1.5, 14, 15), 2, 2);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(QStringLiteral("#ff453a")));
+        p.drawRoundedRect(QRectF(18, 1.5, 5, 15), 2, 2);
+    }
+private:
+    QColor m_frame;
+};
+
 class PaletteGlyph : public QWidget {
 public:
     explicit PaletteGlyph(const QColor& borderColor, QWidget* parent = nullptr)
@@ -1514,6 +1539,26 @@ QFrame* SettingsWindow::makeSeparator() {
     return line;
 }
 
+// Rounded control + a clean, padded popup with an accent-weak selection. The native
+// arrow is hidden because LanguageCombo paints the design's double chevron.
+static QString comboQss(const DesignTokens& tk) {
+    return QStringLiteral(
+        "QComboBox { background-color:%1; color:%2; border:1px solid %3;"
+        " border-radius:8px; padding:0 28px 0 12px; font-size:13px; }"
+        "QComboBox:hover { border-color:%4; }"
+        "QComboBox:focus { border-color:%4; }"
+        "QComboBox::drop-down { border:none; width:26px; }"
+        "QComboBox::down-arrow { image:none; width:0; height:0; }"
+        "QComboBox QAbstractItemView {"
+        " background-color:%1; color:%2; border:1px solid %3; border-radius:8px;"
+        " padding:4px; outline:none;"
+        " selection-background-color:%5; selection-color:%4; }"
+        "QComboBox QAbstractItemView::item {"
+        " min-height:26px; padding:2px 8px; border-radius:6px; }")
+        .arg(colCss(tk.control), colCss(tk.text), colCss(tk.border),
+             colCss(tk.accent), colCss(tk.accentWeak));
+}
+
 QWidget* SettingsWindow::makeRow(const QString& label, QWidget* control,
                                  QPushButton* reset) {
     auto* row = new QWidget;
@@ -1910,21 +1955,7 @@ QWidget* SettingsWindow::buildGeneralTab() {
     // Native single-triangle arrow hidden (LanguageCombo paints the design's
     // up/down double-chevron); rounded control + a clean, padded popup with an
     // accent-weak selection, matching the design.
-    langCombo->setStyleSheet(QStringLiteral(
-        "QComboBox { background-color:%1; color:%2; border:1px solid %3;"
-        " border-radius:8px; padding:0 28px 0 12px; font-size:13px; }"
-        "QComboBox:hover { border-color:%4; }"
-        "QComboBox:focus { border-color:%4; }"
-        "QComboBox::drop-down { border:none; width:26px; }"
-        "QComboBox::down-arrow { image:none; width:0; height:0; }"
-        "QComboBox QAbstractItemView {"
-        " background-color:%1; color:%2; border:1px solid %3; border-radius:8px;"
-        " padding:4px; outline:none;"
-        " selection-background-color:%5; selection-color:%4; }"
-        "QComboBox QAbstractItemView::item {"
-        " min-height:26px; padding:2px 8px; border-radius:6px; }")
-        .arg(colCss(m_tk.control), colCss(m_tk.text), colCss(m_tk.border),
-             colCss(m_tk.accent), colCss(m_tk.accentWeak)));
+    langCombo->setStyleSheet(comboQss(m_tk));
     connect(langCombo, QOverload<int>::of(&QComboBox::activated),
             this, &SettingsWindow::onLanguageChanged);
     addRowWidget(makeRow(Loc::t("settings.language.plain"), langCombo, nullptr));
@@ -2197,21 +2228,7 @@ QWidget* SettingsWindow::buildGeneralTab() {
         combo->setMinimumWidth(150);
         combo->setFixedHeight(30);
         combo->setCursor(Qt::PointingHandCursor);
-        combo->setStyleSheet(QStringLiteral(
-            "QComboBox { background-color:%1; color:%2; border:1px solid %3;"
-            " border-radius:8px; padding:0 28px 0 12px; font-size:13px; }"
-            "QComboBox:hover { border-color:%4; }"
-            "QComboBox:focus { border-color:%4; }"
-            "QComboBox::drop-down { border:none; width:26px; }"
-            "QComboBox::down-arrow { image:none; width:0; height:0; }"
-            "QComboBox QAbstractItemView {"
-            " background-color:%1; color:%2; border:1px solid %3; border-radius:8px;"
-            " padding:4px; outline:none;"
-            " selection-background-color:%5; selection-color:%4; }"
-            "QComboBox QAbstractItemView::item {"
-            " min-height:26px; padding:2px 8px; border-radius:6px; }")
-            .arg(colCss(m_tk.control), colCss(m_tk.text), colCss(m_tk.border),
-                 colCss(m_tk.accent), colCss(m_tk.accentWeak)));
+        combo->setStyleSheet(comboQss(m_tk));
         connect(combo, QOverload<int>::of(&QComboBox::activated), this, [](int i) {
             if (i < 0 || i >= int(kChoices.size())) return;
             Settings::instance().setAutoClearDays(kChoices[size_t(i)].days);
@@ -2241,7 +2258,8 @@ QWidget* SettingsWindow::buildFeaturesTab() {
 
     // A titled section: bold caption above a card of CheckRows.
     auto addSection = [&](const QString& title,
-                          const std::vector<std::function<CheckRow*()>>& makers) {
+                          const std::vector<std::function<CheckRow*()>>& makers,
+                          QWidget* footer = nullptr) {
         auto* block = new QVBoxLayout;
         block->setContentsMargins(0, 0, 0, 0);
         block->setSpacing(8);
@@ -2257,6 +2275,7 @@ QWidget* SettingsWindow::buildFeaturesTab() {
         col->setContentsMargins(0, 4, 0, 4);
         col->setSpacing(0);
         for (auto& mk : makers) col->addWidget(mk());
+        if (footer) col->addWidget(footer);
 
         block->addWidget(card);
         v->addLayout(block);
@@ -2337,7 +2356,51 @@ QWidget* SettingsWindow::buildFeaturesTab() {
             });
             return row;
         });
-        addSection(Loc::t("features.interfaceTitle"), makers);
+        makers.push_back([this, &s, &previewChip]() {
+            auto* chip = previewChip(new VerticalToolbarGlyph(m_tk.text3));
+            auto* row = new CheckRow(m_tk, Loc::t("features.toolbarVertical"),
+                                     s.toolbarVerticalEnabled(), chip);
+            connect(row, &QAbstractButton::toggled, this, [](bool on) {
+                Settings::instance().setToolbarVerticalEnabled(on);
+            });
+            return row;
+        });
+
+        // Animation choice: a label + combo rather than a CheckRow, "Off" included.
+        struct Choice { const char* key; const char* value; };
+        static const std::array<Choice, 5> kChoices{{
+            {"features.toolbarAnimation.genie",  "genie"},
+            {"features.toolbarAnimation.slide",  "slide"},
+            {"features.toolbarAnimation.spring", "spring"},
+            {"features.toolbarAnimation.fade",   "fade"},
+            {"features.toolbarAnimation.off",    "off"},
+        }};
+        auto* combo = new LanguageCombo(m_tk);
+        const QString current = s.toolbarAnimation();
+        for (size_t i = 0; i < kChoices.size(); ++i) {
+            combo->addItem(Loc::t(kChoices[i].key));
+            if (current == QLatin1String(kChoices[i].value)) combo->setCurrentIndex(int(i));
+        }
+        combo->setMinimumWidth(150);
+        combo->setFixedHeight(30);
+        combo->setCursor(Qt::PointingHandCursor);
+        combo->setStyleSheet(comboQss(m_tk));
+        connect(combo, QOverload<int>::of(&QComboBox::activated), this, [](int i) {
+            if (i < 0 || i >= int(kChoices.size())) return;
+            Settings::instance().setToolbarAnimation(QString::fromLatin1(kChoices[size_t(i)].value));
+        });
+
+        auto* animRow = new QWidget;
+        auto* animLayout = new QHBoxLayout(animRow);
+        animLayout->setContentsMargins(kRowPadH, 6, kRowPadH, 6);
+        auto* animLabel = new QLabel(Loc::t("features.toolbarAnimation"));
+        animLabel->setStyleSheet(QStringLiteral("color:%1; font-size:13px;")
+                                     .arg(colCss(m_tk.text)));
+        animLayout->addWidget(animLabel, 0, Qt::AlignVCenter);
+        animLayout->addStretch(1);
+        animLayout->addWidget(combo, 0, Qt::AlignVCenter);
+
+        addSection(Loc::t("features.interfaceTitle"), makers, animRow);
     }
 
     // ===== Text options =====

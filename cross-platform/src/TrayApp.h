@@ -49,6 +49,7 @@ public:
 
 public slots:
     void startCapture();        // hotkey / menu "Capture" trigger
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void openSettings();
     // Ask GitHub for a newer release. Silent = only speak up if one exists
     // (used for the automatic check shortly after launch).

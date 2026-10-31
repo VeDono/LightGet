@@ -28,6 +28,8 @@ constexpr char kSaveFolder[]    = "saveFolder";
 constexpr char kBarIcon[]       = "barIcon";
 constexpr char kBarIconCustom[] = "barIconCustom";
 constexpr char kShowColors[]    = "showColors";
+constexpr char kToolbarAnim[]   = "toolbarAnimation";
+constexpr char kToolbarVert[]   = "toolbarVertical";
 constexpr char kTextAlign[]     = "textAlign";
 constexpr char kTextBg[]        = "textBg";
 constexpr char kTextFont[]      = "textFont";
@@ -257,6 +259,25 @@ bool Settings::showColorPalette() const {
 
 void Settings::setShowColorPalette(bool v) {
     m_s.setValue(kShowColors, v);
+}
+
+QString Settings::toolbarAnimation() const {
+    const QString v = m_s.value(kToolbarAnim).toString();
+    const bool known = v == QLatin1String("off") || v == QLatin1String("slide") ||
+                       v == QLatin1String("spring") || v == QLatin1String("fade");
+    return known ? v : QStringLiteral("genie");
+}
+
+void Settings::setToolbarAnimation(const QString& v) {
+    m_s.setValue(kToolbarAnim, v);
+}
+
+bool Settings::toolbarVerticalEnabled() const {
+    return m_s.value(kToolbarVert, true).toBool();
+}
+
+void Settings::setToolbarVerticalEnabled(bool v) {
+    m_s.setValue(kToolbarVert, v);
 }
 
 bool Settings::textAlignmentEnabled() const {

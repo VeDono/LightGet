@@ -194,6 +194,21 @@ void MacNative_activateApp() {
 }
 
 // ---------------------------------------------------------------------------
+// MacNative_removeWindowNow - take a window off the screen with no fade-out, for
+// when the next thing to happen is a screen grab that must not contain it.
+// ---------------------------------------------------------------------------
+void MacNative_removeWindowNow(WId win) {
+    if (win == 0) return;
+    NSView* view = (__bridge NSView*)reinterpret_cast<void*>(win);
+    if (![view isKindOfClass:[NSView class]]) return;
+    NSWindow* window = view.window;
+    window.animationBehavior = NSWindowAnimationBehaviorNone;
+    window.alphaValue = 0.0;
+    [window orderOut:nil];
+    window.alphaValue = 1.0;   // the next popup shows the same window again
+}
+
+// ---------------------------------------------------------------------------
 // Autorelease-pool barrier — push/pop an explicit pool around heavy capture
 // work. Measured on a live session (macOS 26): the main thread accumulated a
 // chain of never-draining autorelease pool pages holding a __strong CGImage

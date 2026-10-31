@@ -44,6 +44,9 @@
 class QVariantAnimation;
 
 class ToolbarView;
+class ToolbarGenieView;
+class QVariantAnimation;
+class QPropertyAnimation;
 class TextInspectorView;
 class TextPanel;
 class QTextEdit;
@@ -151,7 +154,16 @@ private:
     // ----- Toolbar (Spec 3 §9) -----
     void showToolbar(const QRectF& sel);
     void hideToolbar();
+    // Below and above lie the panel flat, right and left stand it upright. Fallback
+    // is the last resort under the notch, when nothing else is on screen.
+    enum class ToolbarSlot { None, Below, Above, Right, Left, Inside, Fallback };
+    enum class ToolbarAnimation { Off, Genie, Slide, Spring, Fade };
+    QRectF toolbarSlotRect(ToolbarSlot slot, const QRectF& sel) const;
+    bool toolbarSlotFits(ToolbarSlot slot, const QRectF& sel, qreal margin) const;
     void positionToolbar(const QRectF& sel);
+    void startToolbarTravel();                       // animate to the current slot
+    void applyToolbarTravel(qreal t);
+    void finishToolbarTravel();                      // settle in the slot right now
     void animateToolbarIn();                         // 160ms slide-up + fade
 
     // ----- Tool/color selection from toolbar callbacks (Spec 3 §9) -----
@@ -231,6 +243,16 @@ private:
     qreal m_lineWidth = 3.0;                // const stroke width for shapes
 
     ToolbarView* m_toolbar = nullptr;
+    ToolbarSlot m_toolbarSlot = ToolbarSlot::None;
+    QPointF m_toolbarRest;                   // where it settles, tracks the selection
+    qreal m_toolbarRestMorph = 0.0;
+    ToolbarAnimation m_toolbarAnimation = ToolbarAnimation::Genie;
+    bool m_toolbarVerticalAllowed = true;
+    QPointer<QVariantAnimation> m_toolbarTravel;
+    QPointer<QPropertyAnimation> m_toolbarAppear;
+    QPointF m_travelFromCenter;
+    qreal m_travelFromMorph = 0.0;
+    QPointer<ToolbarGenieView> m_genie;
 
     DragMode m_dragMode = DragMode::None;
     Handle m_dragHandle = Handle::BR;
