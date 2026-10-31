@@ -271,8 +271,8 @@ namespace {
 // time, which is why it takes seconds while the next one is instant. Nothing here
 // is a trick: it is the same code the capture path runs, run early.
 //
-// Windows only. That is where the slow first capture was reported, and warming a
-// stack that already behaves costs risk for no reward.
+// The Windows-specific part; LightGet_warmOverlayStack covers what every platform
+// shares.
 void warmUpCaptureStack() {
     LG_TRACE("warm-up");
 
