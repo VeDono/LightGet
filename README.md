@@ -92,7 +92,8 @@ This edition is no longer actively developed.
 - <kbd>⇧⌘2</kbd> — dim the screen and start a selection (or click the menu-bar / tray icon).
 - Drag to select; drag the handles to resize, drag inside to move.
 - Toolbar: cursor / arrow / line / rectangle / filled rectangle / pen / text, colour palette,
-  undo / redo, copy, save, close.
+  undo / redo, copy, save, close. With no room above or below the selection it stands upright
+  beside it. How it moves between places (or whether it stands upright at all) is set in Settings.
 - <kbd>⌘C</kbd> / <kbd>⌘X</kbd> / <kbd>Enter</kbd> — copy. <kbd>⌘S</kbd> — save. <kbd>Esc</kbd> — cancel.
 - Text tool: click to place and type; a panel appears above the block for font / size / style /
   alignment / colour / background; corner handles resize and rotate; <kbd>Enter</kbd> confirms,

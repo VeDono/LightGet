@@ -70,6 +70,15 @@ public:
     // Highlight the active palette color (centered contrast checkmark).
     void setSelectedColor(int paletteIndex);
 
+    // The panel's shape: 0 is the row, 1 the column, and in between it folds to a
+    // small pill and opens along the other axis. Resizes the widget to match.
+    void setMorph(qreal m);
+    qreal morph() const { return m_morph; }
+    // Size the panel has at rest in either orientation.
+    QSize restSize(bool vertical) const {
+        return vertical ? m_rowSize.transposed() : m_rowSize;
+    }
+
     // Pop-bounce a tool/color button (1.10 peak) by tool / color index.
     void popTool(Tool t);
     void popColor(int index);
@@ -110,9 +119,56 @@ private:
 
     QHash<Tool, QPushButton*> m_toolButtons;
     QVector<QPair<QColor, QPushButton*>> m_colorButtons;
-    QVector<int> m_separatorX;   // x-centres of the 1px group dividers (design §1)
+    QVector<int> m_separators;   // offsets of the 1px group dividers along the panel
+    // Every button with its place in the row. The column is the same layout with x
+    // and y swapped, since padding is equal on both axes and the items are square.
+    QVector<QPair<QWidget*, QRect>> m_items;
+    QSize m_rowSize;
+    qreal m_morph = 0.0;
+    bool m_itemsHidden = false;  // while folded, when they would all pile up
     Tool m_selectedTool = Tool::Select;
     int m_selectedColor = 0;
+};
+
+// ---------------------------------------------------------------------------
+// ToolbarGenieView - the toolbar in flight in the "Genie" animation. A picture of it
+// is cut into thin slices across its length, and every slice travels on its own from
+// where it is now straight to where it belongs in the new place. The end nearest the
+// destination leaves first and the rest follow, so it flows over as a ribbon that
+// narrows on the way, without any stop in between.
+// ---------------------------------------------------------------------------
+class ToolbarGenieView : public QWidget {
+public:
+    explicit ToolbarGenieView(QWidget* parent);
+
+    // from: the panel as it stands. to: what it looks like in the new place. The path
+    // bows away from awayFrom, so it goes round the selection rather than into it.
+    void begin(const QPixmap& fromImage, const QRectF& fromRect, const QPixmap& toImage,
+               const QRectF& toRect, const QPointF& awayFrom);
+    // The destination changed in mid-flight: carry on from the shape it has right now.
+    void redirect(const QPixmap& toImage, const QRectF& toRect);
+    // t runs 0 to 1. The rect may keep moving, it follows the selection being dragged.
+    void setProgress(qreal t, const QRectF& toRect);
+
+protected:
+    void paintEvent(QPaintEvent*) override;
+
+private:
+    struct Node {
+        QPointF center;     // on the panel's centre line
+        QPointF across;     // half the panel's thickness, sideways
+        QPointF fromCenter, fromAcross;
+        int fromImage = 0;  // index into m_images: the picture this slice left with
+        qreal delay = 0.0;  // 0 for the end that leaves first, 1 for the last one
+        bool arrived = false;   // past halfway, so showing the destination's picture
+    };
+    void aimAt(const QRectF& toRect);
+
+    QVector<Node> m_nodes;
+    QVector<QPixmap> m_images;
+    int m_toImage = 0;
+    QPointF m_bow;          // unit vector the path bows towards
+    QPointF m_awayFrom;
 };
 
 // ---------------------------------------------------------------------------

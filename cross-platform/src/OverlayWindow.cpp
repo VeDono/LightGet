@@ -1618,38 +1618,216 @@ void OverlayWindow::showToolbar(const QRectF& sel) {
         m_toolbar->rebuild();
         m_toolbar->setSelectedTool(m_tool);
         m_toolbar->show();
+
+        // Read once per toolbar: positionToolbar runs on every mouse move.
+        const Settings& s = Settings::instance();
+        const QString anim = s.toolbarAnimation();
+        m_toolbarAnimation = anim == QLatin1String("off")      ? ToolbarAnimation::Off
+                             : anim == QLatin1String("slide")  ? ToolbarAnimation::Slide
+                             : anim == QLatin1String("spring") ? ToolbarAnimation::Spring
+                             : anim == QLatin1String("fade")   ? ToolbarAnimation::Fade
+                                                               : ToolbarAnimation::Genie;
+        m_toolbarVerticalAllowed = s.toolbarVerticalEnabled();
     }
     positionToolbar(sel);
     if (isNew) animateToolbarIn();
 }
 
 void OverlayWindow::hideToolbar() {
+    if (m_toolbarTravel) {
+        m_toolbarTravel->stop();
+        m_toolbarTravel->deleteLater();
+        m_toolbarTravel = nullptr;
+    }
+    delete m_genie.data();
+    m_toolbarSlot = ToolbarSlot::None;
     if (m_toolbar) { m_toolbar->deleteLater(); m_toolbar = nullptr; }
+}
+
+QRectF OverlayWindow::toolbarSlotRect(ToolbarSlot slot, const QRectF& sel) const {
+    const qreal gap = 8;
+    if (slot == ToolbarSlot::Right || slot == ToolbarSlot::Left) {
+        const QSizeF bar = m_toolbar->restSize(true);
+        const qreal x = slot == ToolbarSlot::Right ? sel.right() + gap
+                                                   : sel.left() - bar.width() - gap;
+        QRectF r(QPointF(x, std::min(std::max<qreal>(0, sel.top()), height() - bar.height())), bar);
+        if (!clearsNotch(r)) r.moveTop(belowNotch());
+        return r;
+    }
+    const QSizeF bar = m_toolbar->restSize(false);
+    const qreal x = std::min(std::max<qreal>(0, sel.left()), width() - bar.width());
+    qreal y;
+    switch (slot) {
+        case ToolbarSlot::Below:  y = sel.bottom() + gap; break;
+        case ToolbarSlot::Above:  y = sel.top() - bar.height() - gap; break;
+        case ToolbarSlot::Inside: y = sel.bottom() - bar.height() - gap; break;
+        default:
+            y = std::min(std::max<qreal>(0, belowNotch()), height() - bar.height());
+            break;
+    }
+    return QRectF(QPointF(x, y), bar);
+}
+
+bool OverlayWindow::toolbarSlotFits(ToolbarSlot slot, const QRectF& sel, qreal margin) const {
+    if (slot == ToolbarSlot::Fallback) return true;
+    QRectF r = toolbarSlotRect(slot, sel);
+    // The margin applies along the side it stands out on: the toolbar is pushed flush
+    // against the screen edge on the other axis, so it could never have spare room there.
+    const bool upright = slot == ToolbarSlot::Right || slot == ToolbarSlot::Left;
+    r = upright ? r.adjusted(-margin, 0, margin, 0) : r.adjusted(0, -margin, 0, margin);
+    return QRectF(rect()).contains(r) && clearsNotch(r);
 }
 
 void OverlayWindow::positionToolbar(const QRectF& sel) {
     if (!m_toolbar) return;
-    const QSizeF bar = m_toolbar->size();
-    const qreal gap = 8;
-    const qreal x = std::min(std::max<qreal>(0, sel.left()), width() - bar.width());
 
-    const auto usable = [&](qreal y) {
-        return y >= 0 && y + bar.height() <= height() && clearsNotch(QRectF(QPointF(x, y), bar));
+    // Flat below or above comes first and upright beside the selection next, each
+    // clear of the notch: with a tall selection the "above" slot lands right under
+    // it, and a toolbar there cannot be seen or clicked. Inside is what is left.
+    // A better slot must have room to spare before the toolbar leaves one that still
+    // fits, otherwise a selection resting on the boundary flips it back and forth.
+    const qreal spareRoom = 12;
+    const bool stay = m_toolbarSlot != ToolbarSlot::None && toolbarSlotFits(m_toolbarSlot, sel, 0);
+    ToolbarSlot slot = ToolbarSlot::Fallback;
+    for (ToolbarSlot s : {ToolbarSlot::Below, ToolbarSlot::Above, ToolbarSlot::Right,
+                          ToolbarSlot::Left, ToolbarSlot::Inside}) {
+        const bool upright = s == ToolbarSlot::Right || s == ToolbarSlot::Left;
+        if (upright && !m_toolbarVerticalAllowed) continue;
+        if ((stay && s == m_toolbarSlot) || toolbarSlotFits(s, sel, stay ? spareRoom : 0)) {
+            slot = s;
+            break;
+        }
+    }
+
+    const bool first = m_toolbarSlot == ToolbarSlot::None;
+    const bool changed = slot != m_toolbarSlot;
+    m_toolbarSlot = slot;
+    m_toolbarRest = toolbarSlotRect(slot, sel).topLeft();
+    m_toolbarRestMorph = (slot == ToolbarSlot::Right || slot == ToolbarSlot::Left) ? 1.0 : 0.0;
+
+    if (changed && !first && m_toolbarAnimation != ToolbarAnimation::Off) startToolbarTravel();
+    else if (!m_toolbarTravel) finishToolbarTravel();
+}
+
+void OverlayWindow::startToolbarTravel() {
+    if (m_toolbarAppear) m_toolbarAppear->stop();
+
+    const bool genie = m_toolbarAnimation == ToolbarAnimation::Genie;
+    const auto restImage = [this] {
+        m_toolbar->setMorph(m_toolbarRestMorph);
+        return m_toolbar->grab();
     };
-    const qreal below  = sel.bottom() + gap;
-    const qreal above  = sel.top() - bar.height() - gap;
-    const qreal inside = sel.bottom() - bar.height() - gap;
 
-    // Below, then above, then inside near the bottom edge. Each spot must also clear
-    // the notch: with a tall selection the "above" slot lands right under it, and a
-    // toolbar there cannot be seen or clicked.
-    qreal y;
-    if (usable(below))       y = below;
-    else if (usable(above))  y = above;
-    else if (usable(inside)) y = inside;
-    else                     y = belowNotch();
-    y = std::min(std::max<qreal>(0, y), height() - bar.height());
-    m_toolbar->move(static_cast<int>(x), static_cast<int>(y));
+    qreal startAt = 0;
+    if (m_toolbarTravel) {
+        const qreal t = m_toolbarTravel->currentValue().toReal();
+        if (genie) {
+            const QSizeF restSize = m_toolbar->restSize(m_toolbarRestMorph > 0.5);
+            m_genie->redirect(restImage(), QRectF(m_toolbarRest, restSize));
+            m_toolbarTravel->setCurrentTime(0);
+            return;
+        }
+        // Fading out has no destination yet: the new one is simply used at the swap.
+        if (m_toolbarAnimation == ToolbarAnimation::Fade && t < 0.5) return;
+        // Fading back in: turn around at the same opacity.
+        if (m_toolbarAnimation == ToolbarAnimation::Fade) startAt = 1 - t;
+        m_toolbarTravel->stop();
+        m_toolbarTravel->deleteLater();
+    }
+
+    m_travelFromCenter = QRectF(m_toolbar->geometry()).center();
+    m_travelFromMorph = m_toolbar->morph();
+
+    if (genie) {
+        m_toolbar->setGraphicsEffect(nullptr);
+        const QRectF fromRect(m_toolbar->geometry());
+        const QPixmap fromImage = m_toolbar->grab();
+        const QPixmap toImage = restImage();
+        const QSizeF restSize = m_toolbar->restSize(m_toolbarRestMorph > 0.5);
+        m_toolbar->hide();
+        m_genie = new ToolbarGenieView(this);
+        m_genie->begin(fromImage, fromRect, toImage, QRectF(m_toolbarRest, restSize),
+                       m_selection ? m_selection->center() : QRectF(rect()).center());
+        m_genie->show();
+    }
+
+    auto* travel = new QVariantAnimation(m_toolbar);
+    m_toolbarTravel = travel;
+    travel->setStartValue(0.0);
+    travel->setEndValue(1.0);
+    travel->setDuration(genie ? 420
+                        : m_toolbarAnimation == ToolbarAnimation::Spring ? 380
+                        : m_toolbarAnimation == ToolbarAnimation::Fade ? 200 : 260);
+    connect(travel, &QVariantAnimation::valueChanged, this,
+            [this](const QVariant& v) { applyToolbarTravel(v.toReal()); });
+    connect(travel, &QVariantAnimation::finished, this, [this] { finishToolbarTravel(); });
+    travel->start();
+    if (startAt > 0) travel->setCurrentTime(int(startAt * travel->duration()));
+}
+
+void OverlayWindow::applyToolbarTravel(qreal t) {
+    if (!m_toolbar) return;
+
+    if (m_toolbarAnimation == ToolbarAnimation::Genie) {
+        if (m_genie) {
+            const QSizeF restSize = m_toolbar->restSize(m_toolbarRestMorph > 0.5);
+            m_genie->setProgress(t, QRectF(m_toolbarRest, restSize));
+        }
+        return;
+    }
+
+    if (m_toolbarAnimation == ToolbarAnimation::Fade) {
+        auto* effect = qobject_cast<QGraphicsOpacityEffect*>(m_toolbar->graphicsEffect());
+        if (!effect) {
+            effect = new QGraphicsOpacityEffect(m_toolbar);
+            m_toolbar->setGraphicsEffect(effect);
+        }
+        effect->setOpacity(std::abs(1 - 2 * t));
+        if (t >= 0.5) {
+            m_toolbar->setMorph(m_toolbarRestMorph);
+            m_toolbar->move(static_cast<int>(m_toolbarRest.x()), static_cast<int>(m_toolbarRest.y()));
+        }
+        return;
+    }
+
+    static const QEasingCurve shape(QEasingCurve::InOutQuad);
+    static const QEasingCurve glide(QEasingCurve::OutCubic);
+    static const QEasingCurve spring = [] {
+        QEasingCurve c(QEasingCurve::OutBack);
+        c.setOvershoot(1.2);
+        return c;
+    }();
+    const qreal moved = (m_toolbarAnimation == ToolbarAnimation::Spring ? spring : glide).valueForProgress(t);
+
+    m_toolbar->setMorph(m_travelFromMorph +
+                        (m_toolbarRestMorph - m_travelFromMorph) * shape.valueForProgress(t));
+    // By centre, since the size is changing too. The rest position keeps following
+    // the selection, so a drag in progress just bends the path.
+    const QSizeF restSize = m_toolbar->restSize(m_toolbarRestMorph > 0.5);
+    const QPointF to = m_toolbarRest + QPointF(restSize.width(), restSize.height()) / 2;
+    const QPointF c = m_travelFromCenter + (to - m_travelFromCenter) * moved;
+    const QSize size = m_toolbar->size();
+    // A spring's overshoot may not carry it off the screen.
+    m_toolbar->move(std::clamp(int(std::lround(c.x() - size.width() / 2.0)), 0,
+                               std::max(0, width() - size.width())),
+                    std::clamp(int(std::lround(c.y() - size.height() / 2.0)), 0,
+                               std::max(0, height() - size.height())));
+}
+
+void OverlayWindow::finishToolbarTravel() {
+    if (!m_toolbar) return;
+    if (m_toolbarTravel) {
+        m_toolbarTravel->stop();
+        m_toolbarTravel->deleteLater();
+        m_toolbarTravel = nullptr;
+        if (m_toolbarAnimation == ToolbarAnimation::Fade) m_toolbar->setGraphicsEffect(nullptr);
+    }
+    m_toolbar->setMorph(m_toolbarRestMorph);
+    m_toolbar->move(static_cast<int>(m_toolbarRest.x()), static_cast<int>(m_toolbarRest.y()));
+    if (m_genie) {
+        m_toolbar->show();
+        delete m_genie.data();
+    }
 }
 
 void OverlayWindow::animateToolbarIn() {
@@ -1668,6 +1846,7 @@ void OverlayWindow::animateToolbarIn() {
     fade->setEasingCurve(QEasingCurve::OutCubic);
 
     auto* slide = new QPropertyAnimation(m_toolbar, "pos", m_toolbar);
+    m_toolbarAppear = slide;
     slide->setDuration(160);
     slide->setStartValue(QPoint(finalPos.x(), finalPos.y() + 6));
     slide->setEndValue(finalPos);
@@ -2807,11 +2986,31 @@ int LightGet_runOverlayBench() {
         w->m_notch = notch;
         const int H = int(sz.height());
         int violations = 0, checked = 0;
+        int upright = 0;
         const auto check = [&](const QRectF& sel) {
             w->m_selection = sel;
+            w->m_toolbarSlot = OverlayWindow::ToolbarSlot::None;   // no memory of the last one
             w->showToolbar(sel);
             pump();
             ++checked;
+            using Slot = OverlayWindow::ToolbarSlot;
+            const Slot slot = w->m_toolbarSlot;
+            if (slot == Slot::Right || slot == Slot::Left) {
+                ++upright;
+                // Flat always wins when it fits, and upright can only be a side slot.
+                if (w->toolbarSlotFits(Slot::Below, sel, 0) || w->toolbarSlotFits(Slot::Above, sel, 0)) {
+                    ++violations;
+                    fprintf(stdout, "  upright with room for flat: selection %.0f,%.0f %.0fx%.0f\n",
+                            sel.x(), sel.y(), sel.width(), sel.height());
+                }
+                if (!w->m_toolbarVerticalAllowed) ++violations;
+            }
+            if (slot != Slot::Inside && slot != Slot::Fallback &&
+                QRectF(w->m_toolbar->geometry()).intersects(sel)) {
+                ++violations;
+                fprintf(stdout, "  covers selection: selection %.0f,%.0f %.0fx%.0f\n", sel.x(),
+                        sel.y(), sel.width(), sel.height());
+            }
             if (w->m_toolbar->geometry().intersects(keepOut)) {
                 ++violations;
                 fprintf(stdout, "  under notch: selection %.0f,%.0f %.0fx%.0f -> toolbar y=%d\n",
@@ -2830,13 +3029,172 @@ int LightGet_runOverlayBench() {
             }
         };
         // The reported case: tall selection sliding up towards the notch.
-        for (int top = 0; top <= 200; top += 4)
-            for (int left : {0, 300, 700, 800, 900, 1200})
-                for (int h : {60, 300, 900, H - top - 2, H - top - 60})
-                    if (h > 8) check(QRectF(left, top, 500, h));
-        fprintf(stdout, "%-30s %d placements, %d violations\n", "notch", checked, violations);
-        if (violations) ++failures;
+        const auto walk = [&] {
+            for (int top = 0; top <= 200; top += 4)
+                for (int left : {0, 300, 700, 800, 900, 1200})
+                    for (int h : {60, 300, 900, H - top - 2, H - top - 60})
+                        if (h > 8) check(QRectF(left, top, 500, h));
+        };
+        walk();
+        fprintf(stdout, "%-30s %d placements, %d upright, %d violations\n", "notch", checked,
+                upright, violations);
+        if (violations || upright == 0) ++failures;
+
+        checked = upright = violations = 0;
+        w->m_toolbarVerticalAllowed = false;
+        walk();
+        fprintf(stdout, "%-30s %d placements, %d upright, %d violations\n", "notch, vertical off",
+                checked, upright, violations);
+        if (violations || upright != 0) ++failures;
+        w->m_toolbarVerticalAllowed = true;
+
+        // Full width and height leaves nowhere but inside.
+        w->m_toolbarSlot = OverlayWindow::ToolbarSlot::None;
+        w->showToolbar(QRectF(w->rect()));
+        if (w->m_toolbarSlot != OverlayWindow::ToolbarSlot::Inside) {
+            fprintf(stdout, "  full screen selection did not put the toolbar inside\n");
+            ++failures;
+        }
         w->m_notch = QRect();
+    }
+
+    // Travel between slots: every style has to end exactly in the slot, also when the
+    // destination changes on the way, and a selection on the boundary must not flip it.
+    {
+        using Slot = OverlayWindow::ToolbarSlot;
+        using Anim = OverlayWindow::ToolbarAnimation;
+        const int H = int(sz.height());
+        const QRectF flat(300, 100, 700, 400);
+        const QRectF tall(300, 4, 700, H - 8);
+        const QRectF elsewhere(700, 4, 700, H - 8);
+        const auto settle = [&](QVector<qint64>* frames = nullptr, const QString& dump = {}) {
+            QElapsedTimer guard;
+            guard.start();
+            int shot = 0;
+            while (w->m_toolbarTravel && guard.elapsed() < 2000) {
+                QElapsedTimer one;
+                one.start();
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 4);
+                if (frames) *frames << one.nsecsElapsed() / 1000;
+                if (!dump.isEmpty() && guard.elapsed() >= shot * 40) {
+                    w->grab().save(QStringLiteral("%1_%2.png").arg(dump).arg(shot, 2, 10, QLatin1Char('0')));
+                    ++shot;
+                }
+            }
+            return !w->m_toolbarTravel;
+        };
+        const auto atRest = [&](const QRectF& sel, Slot expected) {
+            const QRect want = w->toolbarSlotRect(expected, sel).toRect();
+            return w->m_toolbarSlot == expected && w->m_toolbar->pos() == want.topLeft() &&
+                   w->m_toolbar->size() == want.size() && !w->m_toolbar->graphicsEffect() &&
+                   !w->m_toolbar->isHidden() && !w->m_genie;
+        };
+        const QString dumpDir = qEnvironmentVariable("LIGHTGET_BENCH_DUMP");
+        if (!dumpDir.isEmpty()) {
+            for (int i = 0; i <= 8; ++i) {
+                w->m_toolbar->setMorph(i / 8.0);
+                w->m_toolbar->grab().save(QStringLiteral("%1/morph_%2.png").arg(dumpDir).arg(i));
+            }
+            w->m_toolbar->setMorph(w->m_toolbarRestMorph);
+        }
+        const struct { Anim anim; const char* name; } styles[] = {
+            {Anim::Genie, "genie"}, {Anim::Slide, "slide"}, {Anim::Spring, "spring"},
+            {Anim::Fade, "fade"}, {Anim::Off, "off"},
+        };
+        for (const auto& style : styles) {
+            w->m_toolbarAnimation = style.anim;
+            w->m_selection = flat;
+            w->m_toolbarSlot = Slot::None;
+            w->showToolbar(flat);
+            if (w->m_toolbarAppear) w->m_toolbarAppear->stop();
+            w->m_toolbar->setGraphicsEffect(nullptr);
+            pump();
+
+            QVector<qint64> frames;
+            bool ok = true;
+
+            w->m_selection = tall;
+            w->positionToolbar(tall);
+            // Fixed moments of the flight for looking at, independent of the clock.
+            const auto dumpFlight = [&](const char* name) {
+                w->update();
+                pump();
+                w->m_toolbarTravel->pause();
+                for (int i = 0; i < 10; ++i) {   // the very end would finish the flight
+                    w->m_toolbarTravel->setCurrentTime(i * w->m_toolbarTravel->duration() / 10);
+                    QCoreApplication::processEvents();
+                    w->grab().save(QStringLiteral("%1/%2_%3.png").arg(dumpDir, QLatin1String(name)).arg(i));
+                }
+                w->m_toolbarTravel->setCurrentTime(0);
+                w->m_toolbarTravel->resume();
+            };
+            if (!dumpDir.isEmpty() && style.anim == Anim::Genie) {
+                dumpFlight("upright");
+                settle();
+                // Flat to flat: the selection reaches the bottom and it flips to the top.
+                w->m_selection = flat;
+                w->positionToolbar(flat);
+                settle();
+                const QRectF low(300, H - 300, 700, 280);
+                w->m_selection = low;
+                w->positionToolbar(low);
+                dumpFlight("flat");
+                settle();
+                w->m_selection = flat;
+                w->positionToolbar(flat);
+                settle();
+                w->m_selection = tall;
+                w->positionToolbar(tall);
+            }
+            ok &= (style.anim == Anim::Off) == !w->m_toolbarTravel;
+            ok &= settle(&frames, dumpDir.isEmpty() ? QString()
+                                  : QStringLiteral("%1/travel_%2").arg(dumpDir, QLatin1String(style.name)));
+            ok &= atRest(tall, Slot::Right);
+
+            // Back to flat, and turned around halfway to the right again.
+            w->m_selection = flat;
+            w->positionToolbar(flat);
+            QElapsedTimer half;
+            half.start();
+            while (half.elapsed() < 90) QCoreApplication::processEvents(QEventLoop::AllEvents, 4);
+            w->m_selection = elsewhere;
+            w->positionToolbar(elsewhere);
+            ok &= settle(&frames);
+            ok &= atRest(elsewhere, Slot::Right);
+
+            // A drag along the boundary of the flat slot: at most one change of mind.
+            w->m_selection = tall;
+            w->positionToolbar(tall);
+            settle();
+            int flips = 0;
+            Slot last = w->m_toolbarSlot;
+            const int edge = H - w->m_toolbar->restSize(false).height() - 8;   // bottom where flat fits
+            for (int i = 0; i < 40; ++i) {
+                const QRectF jitter(300, 4, 700, edge - 4 + (i % 2 ? 1 : -1));
+                w->m_selection = jitter;
+                w->positionToolbar(jitter);
+                if (w->m_toolbarSlot != last) { ++flips; last = w->m_toolbarSlot; }
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 2);
+            }
+            ok &= flips <= 1;
+            settle();
+
+            std::sort(frames.begin(), frames.end());
+            // Trails: repaint for the new selection first, so that whatever differs
+            // after the flight can only have been left behind by the toolbar itself.
+            w->m_selection = flat;
+            w->update();
+            pump();
+            w->positionToolbar(flat);
+            ok &= settle();
+            pump();
+            const int ghost = ghostPixels(w);
+            fprintf(stdout, "%-30s %s, worst step %.2f ms, flips on boundary %d, ghost px %d\n",
+                    style.name, ok ? "ok" : "FAILED",
+                    frames.isEmpty() ? 0.0 : frames.last() / 1000.0, flips, ghost);
+            if (!ok || ghost != 0) ++failures;
+            fflush(stdout);
+        }
     }
 
     // 6. Producing the output image for a large selection.
@@ -2963,11 +3321,36 @@ int LightGet_runLiveBench() {
             sendMouse(w, QEvent::MouseMove, a + QPointF(40 + 200 * t, 40 + 150 * t), Qt::LeftButton);
             if (run.elapsed() > 1500) {
                 endPhase("small selection growing");
+                sendMouse(w, QEvent::MouseButtonRelease, a + QPointF(240, 190), Qt::NoButton);
+                phase = 2;
+                w->m_toolbarAnimation = OverlayWindow::ToolbarAnimation::Genie;
+                startPhase("toolbar travel, genie");
+            }
+        } else {
+            // Back and forth between flat and upright, as soon as it has settled.
+            if (!w->m_toolbarTravel) {
+                static bool upright = false;
+                upright = !upright;
+                const QRectF sel = upright ? QRectF(300, 4, 500, sz.height() - 8)
+                                           : QRectF(300, 200, 500, 300);
+                w->m_selection = sel;
+                w->positionToolbar(sel);
+                if (w->m_toolbarSlot != (upright ? OverlayWindow::ToolbarSlot::Right
+                                                 : OverlayWindow::ToolbarSlot::Below))
+                    fprintf(stdout, "unexpected toolbar slot %d\n", int(w->m_toolbarSlot));
+            }
+            if (phase == 2 && run.elapsed() > 1600) {
+                endPhase("toolbar travel, genie");
+                phase = 3;
+                w->m_toolbarAnimation = OverlayWindow::ToolbarAnimation::Slide;
+                startPhase("toolbar travel, slide");
+            } else if (phase == 3 && run.elapsed() > 1000) {
+                endPhase("toolbar travel, slide");
                 loop.quit();
             }
         }
     });
-    QTimer::singleShot(6000, &loop, &QEventLoop::quit);   // hard stop, whatever happens
+    QTimer::singleShot(8000, &loop, &QEventLoop::quit);   // hard stop, whatever happens
     loop.exec();
     ticker.stop();
     w->hide();

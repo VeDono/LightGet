@@ -36,6 +36,7 @@
 #include <QEvent>
 #include <QPolygonF>
 #include <QtMath>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>   // std::abs(int) in Palette::sameColor
 #include <cstring>   // std::strcmp (close-action detection)
@@ -536,14 +537,16 @@ void ToolbarView::buildButtons() {
         if (auto* pb = qobject_cast<QPushButton*>(child)) pb->deleteLater();
     }
 
-    m_separatorX.clear();
+    m_separators.clear();
+    m_items.clear();
+    m_itemsHidden = false;
     qreal x = kPadH;
 
     // Lay a group divider at the current cursor: design §1 is a 1px line,
     // height 26, with margin 7 on each side. Advances x past the line+margins.
     auto addSeparator = [&]() {
         x += 7;                       // left margin
-        m_separatorX.append(int(x));  // centre of the 1px line (painted in paintEvent)
+        m_separators.append(int(x));  // centre of the 1px line (painted in paintEvent)
         x += 1 + 7;                   // line + right margin
     };
 
@@ -569,6 +572,7 @@ void ToolbarView::buildButtons() {
         b->setIconSize(QSize(kIconSize, kIconSize));
         b->setHoverFill(kHoverFill, kBtnRadius);
         b->setGeometry(int(x), kPadV, kButtonSize, kButtonSize);
+        m_items.append(qMakePair(static_cast<QWidget*>(b), b->geometry()));
         b->setProperty("symbol", QString::fromLatin1(ts.symbol));
         connect(b, &QPushButton::clicked, this, [this, tool] {
             setSelectedTool(tool);
@@ -591,6 +595,7 @@ void ToolbarView::buildButtons() {
             // 26px circle (design §1), vertically centered within the button row.
             const int wy = kPadV + (kButtonSize - kSwatch) / 2;
             well->setGeometry(int(x), wy, kSwatch, kSwatch);
+            m_items.append(qMakePair(static_cast<QWidget*>(well), well->geometry()));
             // The well is painted as an antialiased icon (makeSwatch); the button
             // itself stays borderless/transparent (no QSS ring, no hover fill —
             // the design swatches don't get a hover background).
@@ -630,6 +635,7 @@ void ToolbarView::buildButtons() {
         b->setIconSize(QSize(kIconSize, kIconSize));
         b->setHoverFill(isClose ? kCloseHoverFill : kHoverFill, kBtnRadius);
         b->setGeometry(int(x), kPadV, kButtonSize, kButtonSize);
+        m_items.append(qMakePair(static_cast<QWidget*>(b), b->geometry()));
         auto sig = a.sig;
         connect(b, &QPushButton::clicked, this, [this, sig] { (this->*sig)(); });
         b->show();
@@ -643,7 +649,41 @@ void ToolbarView::buildButtons() {
     if (Settings::instance().showColorPalette()) setSelectedColor(m_selectedColor);
 
     // Height = buttonSize(40) + vertical padding(8) * 2 = 56.
-    setFixedSize(int(x + kPadH), kButtonSize + kPadV * 2);
+    m_rowSize = QSize(int(x + kPadH), kButtonSize + kPadV * 2);
+    const qreal morph = m_morph;
+    m_morph = -1.0;   // force the layout: every button above was just placed as a row
+    setMorph(morph);
+    update();
+}
+
+namespace {
+qreal smooth(qreal t) {
+    t = std::clamp(t, qreal(0), qreal(1));
+    return t * t * (3 - 2 * t);
+}
+qreal lerp(qreal a, qreal b, qreal t) { return a + (b - a) * t; }
+}  // namespace
+
+void ToolbarView::setMorph(qreal m) {
+    m = std::clamp(m, qreal(0), qreal(1));
+    if (m == m_morph) return;
+    m_morph = m;
+    // The row closes first, then the column opens. Interpolating both at once would
+    // balloon the panel into a dark square halfway through.
+    const qreal closed = smooth(m * 2);
+    const qreal opened = smooth(m * 2 - 1);
+    const int thick = m_rowSize.height();
+    const int length = m_rowSize.width();
+    setFixedSize(int(std::lround(lerp(length, thick, closed))),
+                 int(std::lround(lerp(thick, length, opened))));
+    const bool hide = closed > 0.7 && opened < 0.3;
+    for (const auto& item : m_items) {
+        const QRect& r = item.second;
+        item.first->move(int(std::lround(lerp(r.x(), r.y(), closed))),
+                         int(std::lround(lerp(r.y(), r.x(), opened))));
+        if (hide != m_itemsHidden) item.first->setVisible(!hide);
+    }
+    m_itemsHidden = hide;
     update();
 }
 
@@ -704,11 +744,149 @@ void ToolbarView::paintEvent(QPaintEvent*) {
     // compact native panel.
     p.setRenderHint(QPainter::Antialiasing, false);
     p.setPen(QPen(kSeparator, 1.0));
+    if (m_itemsHidden) return;
     const qreal sepH = 20.0;
-    const qreal y0 = (height() - sepH) / 2.0;
-    for (int sx : m_separatorX) {
-        const qreal xc = sx + 0.5;   // pixel centre of the 1px line
-        p.drawLine(QPointF(xc, y0), QPointF(xc, y0 + sepH));
+    const qreal mid = m_rowSize.height() / 2.0;
+    for (int s : m_separators) {
+        if (m_morph < 0.5) {
+            const qreal c = lerp(s + 0.5, mid, smooth(m_morph * 2));
+            p.drawLine(QPointF(c, mid - sepH / 2), QPointF(c, mid + sepH / 2));
+        } else {
+            const qreal c = lerp(mid, s + 0.5, smooth(m_morph * 2 - 1));
+            p.drawLine(QPointF(mid - sepH / 2, c), QPointF(mid + sepH / 2, c));
+        }
+    }
+}
+
+// ===========================================================================
+// ToolbarGenieView
+// ===========================================================================
+namespace {
+constexpr int kGenieStrip = 2;   // device pixels per slice
+
+// The picture's long side is the length of the panel, whichever way it stands.
+bool isUpright(const QSizeF& size) { return size.height() > size.width(); }
+
+// Node i of n along the centre line of a panel standing in rect, and its half thickness.
+QPointF nodeCenter(const QRectF& r, int i, int n) {
+    const qreal f = qreal(i) / n;
+    return isUpright(r.size()) ? QPointF(r.center().x(), r.top() + f * r.height())
+                               : QPointF(r.left() + f * r.width(), r.center().y());
+}
+QPointF nodeAcross(const QRectF& r) {
+    return isUpright(r.size()) ? QPointF(r.width() / 2, 0) : QPointF(0, r.height() / 2);
+}
+}  // namespace
+
+ToolbarGenieView::ToolbarGenieView(QWidget* parent) : QWidget(parent) {
+    setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    setFocusPolicy(Qt::NoFocus);
+}
+
+void ToolbarGenieView::begin(const QPixmap& fromImage, const QRectF& fromRect,
+                             const QPixmap& toImage, const QRectF& toRect,
+                             const QPointF& awayFrom) {
+    m_awayFrom = awayFrom;
+    m_images = {fromImage, toImage};
+    m_toImage = 1;
+    const int longSide = std::max(fromImage.width(), fromImage.height());
+    const int n = std::max(1, longSide / kGenieStrip);
+    m_nodes.resize(n + 1);
+    for (int i = 0; i <= n; ++i) {
+        Node& node = m_nodes[i];
+        node.center = node.fromCenter = nodeCenter(fromRect, i, n);
+        node.across = node.fromAcross = nodeAcross(fromRect);
+        node.fromImage = 0;
+    }
+    aimAt(toRect);
+    setProgress(0.0, toRect);
+}
+
+void ToolbarGenieView::redirect(const QPixmap& toImage, const QRectF& toRect) {
+    m_images.append(toImage);
+    const int previousTo = m_toImage;
+    m_toImage = m_images.size() - 1;
+    for (Node& node : m_nodes) {
+        node.fromCenter = node.center;
+        node.fromAcross = node.across;
+        if (node.arrived) node.fromImage = previousTo;
+        node.arrived = false;
+    }
+    aimAt(toRect);
+}
+
+void ToolbarGenieView::aimAt(const QRectF& toRect) {
+    const int n = m_nodes.size() - 1;
+    const QPointF first = m_nodes.first().fromCenter;
+    const QPointF last = m_nodes.last().fromCenter;
+    const QPointF to = toRect.center();
+    const auto dist = [](const QPointF& a) { return std::hypot(a.x(), a.y()); };
+    const bool firstLeads = dist(first - to) <= dist(last - to);
+    for (int i = 0; i <= n; ++i)
+        m_nodes[i].delay = qreal(firstLeads ? i : n - i) / n;
+
+    const QPointF from = (first + last) / 2;
+    const QPointF way = to - from;
+    const qreal length = dist(way);
+    m_bow = length > 0 ? QPointF(-way.y(), way.x()) / length : QPointF();
+    const QPointF middle = (from + to) / 2 - m_awayFrom;
+    if (QPointF::dotProduct(m_bow, middle) < 0) m_bow = -m_bow;
+}
+
+void ToolbarGenieView::setProgress(qreal t, const QRectF& toRect) {
+    constexpr qreal kStagger = 0.3;   // share of the flight between first and last slice
+    constexpr qreal kBow = 0.1;       // of the distance, at the middle of the path
+    constexpr qreal kNarrowing = 0.45;
+    const int n = m_nodes.size() - 1;
+    const QPointF toAcross = nodeAcross(toRect);
+    QRectF bounds;
+    for (int i = 0; i <= n; ++i) {
+        Node& node = m_nodes[i];
+        const qreal own = std::clamp((t - kStagger * node.delay) / (1 - kStagger), qreal(0), qreal(1));
+        const qreal e = smooth(own);
+        const qreal arc = std::sin(M_PI * e);
+        const QPointF toCenter = nodeCenter(toRect, i, n);
+        const QPointF way = toCenter - node.fromCenter;
+        node.center = node.fromCenter + way * e + m_bow * (kBow * std::hypot(way.x(), way.y()) * arc);
+        node.across = (node.fromAcross + (toAcross - node.fromAcross) * e) * (1 - kNarrowing * arc);
+        node.arrived = own >= 0.5;
+        const QPointF reach(std::abs(node.across.x()) + 1, std::abs(node.across.y()) + 1);
+        bounds = bounds.united(QRectF(node.center - reach, node.center + reach));
+    }
+    const QRect area = bounds.adjusted(-2, -2, 2, 2).toAlignedRect();
+    if (geometry() != area) setGeometry(area);
+    update();
+}
+
+void ToolbarGenieView::paintEvent(QPaintEvent*) {
+    QPainter p(this);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    const QTransform base = QTransform::fromTranslate(-x(), -y());
+    const int n = m_nodes.size() - 1;
+    for (int i = 0; i < n; ++i) {
+        const Node& node = m_nodes[i];
+        const QPixmap& image = m_images[node.arrived ? m_toImage : node.fromImage];
+        const bool upright = image.height() > image.width();
+        // This slice of the picture, stretched onto the quad between this node and the
+        // next. In an upright picture the panel's length runs along the picture's y.
+        const QPointF along = m_nodes[i + 1].center - node.center;
+        const QPointF side = node.across * 2;
+        const QPointF origin = node.center - node.across;
+        const qreal length = upright ? image.height() : image.width();
+        const qreal from = length * i / n;
+        const qreal size = length * (i + 1) / n - from;
+        QTransform quad;
+        QRectF slice;
+        if (upright) {
+            quad = QTransform(side.x(), side.y(), along.x(), along.y(), origin.x(), origin.y());
+            slice = QRectF(0, from, image.width(), size);
+        } else {
+            quad = QTransform(along.x(), along.y(), side.x(), side.y(), origin.x(), origin.y());
+            slice = QRectF(from, 0, size, image.height());
+        }
+        p.setTransform(quad * base);
+        p.drawPixmap(QRectF(0, 0, 1, 1), image, slice);
     }
 }
 
