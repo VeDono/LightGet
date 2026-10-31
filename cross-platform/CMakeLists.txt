@@ -112,7 +112,7 @@ target_compile_definitions(LightGet PRIVATE _USE_MATH_DEFINES)
 # "Cross-platform (Qt 6)" reaches the compiler (verified in the generated build).
 # Not a cache entry: a cached value survives a version bump in an existing build
 # directory, and that build then offers its own release as an update.
-set(LIGHTGET_VERSION "1.0.27")
+set(LIGHTGET_VERSION "1.0.28")
 set(LIGHTGET_EDITION "Cross-platform (Qt 6)" CACHE STRING "Build edition label")
 target_compile_definitions(LightGet PRIVATE
     LIGHTGET_VERSION="${LIGHTGET_VERSION}"
@@ -171,8 +171,8 @@ elseif(APPLE)
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_BUNDLE_NAME "${APP_NAME}"
         MACOSX_BUNDLE_GUI_IDENTIFIER "${BUNDLE_ID}"
-        MACOSX_BUNDLE_BUNDLE_VERSION "28"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.27"
+        MACOSX_BUNDLE_BUNDLE_VERSION "29"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.28"
         MACOSX_BUNDLE_ICON_FILE "AppIcon"
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/Info.plist.in"
     )
