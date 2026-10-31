@@ -180,13 +180,15 @@ static QImage grabScreenPixels(QScreen* screen) {
 
     // grabWindow(0) on a QScreen captures that screen's full desktop. The
     // returned QPixmap is at native pixel resolution; dpr is baked into size.
-    const QPixmap pix = screen->grabWindow(0);
-    if (pix.isNull())
-        return QImage();
-
-    QImage image = pix.toImage();
+    QImage image = screen->grabWindow(0).toImage();
     if (image.isNull())
         return QImage();
+
+    // A display has no transparency. Saying so keeps the overlay's backdrop opaque
+    // (memcpy blits, shared with this image) and spares the PNG encoder an alpha
+    // channel. In place: the temporary pixmap above is gone, so nothing is copied.
+    if (image.hasAlphaChannel() && image.depth() == 32)
+        image.reinterpretAsFormat(QImage::Format_RGB32);
 
     // Stamp the device pixel ratio so painting at logical (point) size stays
     // crisp and export rasterizes at points × dpr (header contract).

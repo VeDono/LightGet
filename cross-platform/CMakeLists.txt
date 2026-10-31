@@ -138,7 +138,7 @@ if(WIN32)
     target_sources(LightGet PRIVATE src/win/WinNative.cpp)
 
     # RegisterHotKey / WM_HOTKEY, BitBlt/DXGI capture, SetForegroundWindow.
-    target_link_libraries(LightGet PRIVATE user32 gdi32)
+    target_link_libraries(LightGet PRIVATE user32 gdi32 dwmapi)
     # NOMINMAX: windows.h's min/max macros otherwise clash with std::min/max and
     # Qt's numeric_limits use. WIN32_LEAN_AND_MEAN trims the windows.h surface.
     target_compile_definitions(LightGet PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

@@ -20,6 +20,8 @@
 // a +1 retained bridge (CFBridgingRetain) and released on restore
 // (CFBridgingRelease), so it survives across the Qt event loop.
 
+#include <QRect>
+#include <QtGlobal>
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <ServiceManagement/ServiceManagement.h>
@@ -115,6 +117,38 @@ void OverlayWindow_disableShowAnimation(WId win) {
 // re-associate the mouse so movement stays in sync. This confines reliably.
 // Same WId->NSView->NSWindow climb and nil guards as the helpers above.
 // ---------------------------------------------------------------------------
+// The camera housing of the display whose Qt geometry is `screenGeometry`, in that
+// display's own coordinates (top-left origin, points). Returns false, leaving
+// `outLocal` alone, on any display without one. AppKit describes the usable strips
+// either side of the housing, so the housing is simply the gap between them.
+bool MacNative_notchRect(const QRect& screenGeometry, QRect* outLocal) {
+    if (!outLocal) return false;
+    if (@available(macOS 12.0, *)) {
+        NSArray<NSScreen*>* screens = [NSScreen screens];
+        if (screens.count == 0) return false;
+        const CGFloat primaryHeight = screens[0].frame.size.height;
+        for (NSScreen* s in screens) {
+            const NSRect f = s.frame;
+            const CGFloat topY = primaryHeight - (f.origin.y + f.size.height);
+            if (qAbs(f.origin.x - screenGeometry.x()) > 1 || qAbs(topY - screenGeometry.y()) > 1 ||
+                qAbs(f.size.width - screenGeometry.width()) > 1 ||
+                qAbs(f.size.height - screenGeometry.height()) > 1) {
+                continue;
+            }
+            const CGFloat inset = s.safeAreaInsets.top;
+            const NSRect left = s.auxiliaryTopLeftArea;
+            const NSRect right = s.auxiliaryTopRightArea;
+            if (inset <= 0 || NSIsEmptyRect(left) || NSIsEmptyRect(right)) return false;
+            const int x0 = int(floor(NSMaxX(left) - f.origin.x));
+            const int x1 = int(ceil(NSMinX(right) - f.origin.x));
+            if (x1 <= x0) return false;
+            *outLocal = QRect(x0, 0, x1 - x0, int(ceil(inset)));
+            return true;
+        }
+    }
+    return false;
+}
+
 void MacNative_confineCursorToScreen(WId win) {
     if (win == 0) return;
     NSView* view = (__bridge NSView*)reinterpret_cast<void*>(win);

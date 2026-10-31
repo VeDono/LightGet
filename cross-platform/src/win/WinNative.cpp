@@ -33,6 +33,7 @@
 #include <thread>
 
 #include <windows.h>
+#include <dwmapi.h>
 
 // Forward declarations: the install helpers below call their own teardown
 // counterparts before those are defined.
@@ -153,6 +154,10 @@ LRESULT CALLBACK hotkeyProc(int code, WPARAM wParam, LPARAM lParam) {
             const DWORD now = GetTickCount();
             if (now - g_lastFire > 300) {   // debounce auto-repeat / both edges
                 g_lastFire = now;
+                // Raise the process BEFORE asking the GUI thread to run. Doing it from
+                // startCapture() was too late: on a machine a game is holding, the wait
+                // for that thread to be scheduled at all is part of the delay.
+                SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
                 PostMessageW(g_dispatchWnd, kMsgHotkeyFired, 0, 0);
             }
             return 1;   // swallow, so e.g. the Snipping Tool does not also open
@@ -481,14 +486,37 @@ void WinNative_optOutOfPowerThrottling() {
 #endif
 }
 
-// Lift the process while a capture is actually on screen, and put it straight
-// back afterwards. The grab and the overlay have to feel instant, and against a
-// game's threads a normal-priority background process waits its turn. Deliberately
-// ABOVE_NORMAL and not HIGH: enough to be scheduled promptly, not enough to make
-// the machine stutter, and it lasts only as long as the overlay does.
-void WinNative_setCaptureBoost(bool on) {
-    SetPriorityClass(GetCurrentProcess(),
-                     on ? ABOVE_NORMAL_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS);
+// How hard to compete for the CPU during a capture. Level 2 (HIGH) spans the keypress
+// to the first painted frame: a burst of a few hundred milliseconds, while the game is
+// about to be frozen behind the overlay anyway. Level 1 (ABOVE_NORMAL) holds while the
+// overlay is on screen, enough to keep the selection responsive without starving the
+// game running behind it. Level 0 is rest.
+void WinNative_setCaptureBoost(int level) {
+    SetPriorityClass(GetCurrentProcess(), level >= 2   ? HIGH_PRIORITY_CLASS
+                                          : level == 1 ? ABOVE_NORMAL_PRIORITY_CLASS
+                                                       : NORMAL_PRIORITY_CLASS);
+}
+
+// Called once from the GUI thread at startup. It sleeps in the message loop except
+// when it has real work to do, so a raised priority costs nothing at rest, and it
+// means a hotkey message is picked up at once instead of waiting behind a game's
+// worker threads for a time slice.
+void WinNative_raiseGuiThread() {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+}
+
+// DWMWA_CLOAK. The window stays mapped and can take focus, but the compositor does not
+// show it. A failure (remote session, older DWM) just means no cloak, which is harmless.
+void WinNative_setWindowCloaked(void* windowHandle, bool cloaked) {
+    constexpr DWORD kDwmwaCloak = 13;
+    const BOOL value = cloaked ? TRUE : FALSE;
+    DwmSetWindowAttribute(static_cast<HWND>(windowHandle), kDwmwaCloak, &value, sizeof(value));
+}
+
+// Deliver the pending WM_PAINT right now rather than from the message queue. Qt handles
+// it with a synchronous expose, so the first frame is in the surface on return.
+void WinNative_paintNow(void* windowHandle) {
+    UpdateWindow(static_cast<HWND>(windowHandle));
 }
 
 // Walk the whole GDI capture path once, at a moment of our choosing, so the FIRST
@@ -583,18 +611,19 @@ void WinNative_forceOverlayForeground(void* windowHandle) {
     // Still refused. The remaining gate is the foreground lock timeout, a system
     // setting; zero it just long enough for one more attempt and restore it, so
     // nothing about the user's configuration is left changed.
+    // Flags 0, NOT SPIF_SENDCHANGE: that broadcasts WM_SETTINGCHANGE to every top-level
+    // window and waits on them, and the game is one of those windows. Nothing needs
+    // telling about a value that is restored two lines later.
     DWORD lockTimeout = 0;
     if (!SystemParametersInfoW(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &lockTimeout, 0))
         return;
 
     SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0,
-                          reinterpret_cast<PVOID>(static_cast<UINT_PTR>(0)),
-                          SPIF_SENDCHANGE);
+                          reinterpret_cast<PVOID>(static_cast<UINT_PTR>(0)), 0);
     BringWindowToTop(hwnd);
     SetForegroundWindow(hwnd);
     SetActiveWindow(hwnd);
     SetFocus(hwnd);
     SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0,
-                          reinterpret_cast<PVOID>(static_cast<UINT_PTR>(lockTimeout)),
-                          SPIF_SENDCHANGE);
+                          reinterpret_cast<PVOID>(static_cast<UINT_PTR>(lockTimeout)), 0);
 }

@@ -30,6 +30,7 @@
 
 #include "Annotation.h"
 
+#include <QRegion>
 #include <QWidget>
 #include <QImage>
 #include <QPixmap>
@@ -49,8 +50,14 @@ class QTextEdit;
 class QWidget;
 class QPushButton;
 
+// Hidden performance + repaint-correctness harness (--bench-overlay, main.cpp).
+int LightGet_runOverlayBench();
+int LightGet_runLiveBench();
+
 class OverlayWindow : public QWidget {
     Q_OBJECT
+    friend int ::LightGet_runOverlayBench();
+    friend int ::LightGet_runLiveBench();
 public:
     // screenshot: the captured bitmap for THIS screen (dpr set on the QImage).
     // screen: the QScreen this overlay covers (geometry placed by the controller).
@@ -92,6 +99,10 @@ protected:
 
     // --- Inline text editor event interception (Enter/Shift+Enter/Esc/focus-out) ---
     bool eventFilter(QObject* obj, QEvent* ev) override;
+
+    // Has the first paint happened? TrayApp keeps the window hidden from the
+    // compositor on Windows until it has.
+    bool hasPainted() const { return m_painted; }
 
 private:
     // ----- Drag state machine (Spec 3 §2.4) -----
@@ -186,7 +197,7 @@ private:
 
     // ----- Output (Spec 3 §12) -----
     QImage renderOutput() const;                      // crop+scale; nullptr if too small
-    void writeToClipboard(const QImage& img);
+    static void writeToClipboard(const QImage& img);
     void copyToClipboard();                           // commit -> render -> clipboard -> finish
     void saveToFile();                                // commit -> render -> PNG (silent or dialog)
     QString defaultScreenshotName() const;            // "Screenshot yyyy-MM-dd 'at' HH.mm.ss.png"
@@ -269,6 +280,9 @@ private:
     // device pixel ratio so it stays sharp on Retina.
     QPixmap m_backdrop;
     bool m_painted = false;   // tracing: has this overlay painted once?
+    int m_benchPaints = 0;      // harness counters (--bench-live)
+    qint64 m_benchPaintNs = 0;
+
     void ensureBackdrop();   // (re)build m_backdrop if missing or stale
 
     // ----- Dirty-rect drag optimization -----
@@ -279,6 +293,24 @@ private:
     // repaint, so the next move can union old∪new and damage just that band.
     // Null/empty => no cached bounds yet (force a full repaint of the gesture).
     QRect m_lastPaintedDirty;
+    // Same idea for the selection gestures, which damage by region rather than by
+    // bounding rect: only the frame and what it crossed changes, never the interior.
+    std::optional<QRectF> m_lastSelection;
+
+    // Read once per capture. paintEvent runs per mouse move, and QSettings on
+    // Windows goes to the registry on every value() call.
+    double m_dimOpacity = 0.0;
+    bool m_downscale = false;
+
+    // The camera housing on a notched MacBook, in widget coordinates; null on every
+    // other display. Nothing the user must read or click may sit under it.
+    QRect m_notch;
+    bool clearsNotch(const QRectF& r) const;
+    qreal belowNotch() const;
+
+    QRegion selectionDamage(const QRectF& sel) const;
+    QPointF selectionLabelOrigin(const QRectF& sel, const QSizeF& textSize) const;
+    void applyCursor(const QCursor& c);
 
     // Bounds (logical px, with a margin for chrome/handles/labels) of whatever
     // the current drag is manipulating: the selection rect + its chrome, or the
