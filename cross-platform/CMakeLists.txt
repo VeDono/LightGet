@@ -110,7 +110,9 @@ target_compile_definitions(LightGet PRIVATE _USE_MATH_DEFINES)
 # "function-style macro" heuristic and get DROPPED if written inline. Routing the
 # value through a set() variable first makes CMake quote it correctly so the full
 # "Cross-platform (Qt 6)" reaches the compiler (verified in the generated build).
-set(LIGHTGET_VERSION "1.0.27" CACHE STRING "Product version string")
+# Not a cache entry: a cached value survives a version bump in an existing build
+# directory, and that build then offers its own release as an update.
+set(LIGHTGET_VERSION "1.0.27")
 set(LIGHTGET_EDITION "Cross-platform (Qt 6)" CACHE STRING "Build edition label")
 target_compile_definitions(LightGet PRIVATE
     LIGHTGET_VERSION="${LIGHTGET_VERSION}"

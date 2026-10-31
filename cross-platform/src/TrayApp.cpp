@@ -30,6 +30,7 @@
 #include <QImage>
 #include <QKeySequence>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QMessageBox>
 #include <QSettings>
 #include <QSysInfo>
@@ -692,6 +693,14 @@ QMenu* TrayApp::buildMenu() {
     m_quitAction = quit;
 
     applyMenuTheme();   // initial stylesheet + icon tints for the active theme
+#if defined(Q_OS_MAC)
+    // Create the native window now, not during the first popup. Otherwise the first
+    // click on the first menu of a run is lost: Qt's global mouse monitor closes the
+    // popup a few ms before the press reaches it, so no QAction fires. Measured with
+    // real clicks on macOS 27: lost in every run without this, in none with it.
+    (void)menu->winId();
+#endif
+    menu->installEventFilter(this);
     return menu;
 }
 
@@ -791,6 +800,27 @@ struct MacPoolBarrier {
 #else
 #define LIGHTGET_MAC_POOL_BARRIER do {} while (false)
 #endif
+
+bool TrayApp::eventFilter(QObject* watched, QEvent* event) {
+    // Capture from the menu: QMenu would first flash the row for about 70 ms and only
+    // then close, and the window would still be fading when the screen is grabbed. So
+    // on release, take the menu away at once and capture straight after.
+    if (watched == m_menu && event->type() == QEvent::MouseButtonRelease) {
+        const auto* mouse = static_cast<QMouseEvent*>(event);
+        if (m_menu->actionAt(mouse->position().toPoint()) == m_captureAction) {
+#if defined(Q_OS_MAC) && defined(HAVE_MAC_NATIVE)
+            extern void MacNative_removeWindowNow(WId);
+            MacNative_removeWindowNow(m_menu->winId());
+#endif
+            m_menu->hide();
+            // One frame: the window server still has to composite the screen without it.
+            // Measured with real captures: at 0 ms the menu is in the shot, at 8 ms not.
+            QTimer::singleShot(16, this, &TrayApp::startCapture);
+            return true;
+        }
+    }
+    return QObject::eventFilter(watched, event);
+}
 
 void TrayApp::onHotkeyActivated() {
     startCapture();
