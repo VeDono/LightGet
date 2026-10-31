@@ -81,6 +81,10 @@ public:
     void startDimFadeIn();
     void startDimFadeOut();
 
+    // Has the first paint happened? TrayApp keeps the window hidden from the
+    // compositor on Windows until it has.
+    bool hasPainted() const { return m_painted; }
+
 signals:
     void finished();          // overlay should be torn down (Esc / copy / save / close)
     void beganSelection();    // a new selection started here -> clear the others
@@ -99,10 +103,6 @@ protected:
 
     // --- Inline text editor event interception (Enter/Shift+Enter/Esc/focus-out) ---
     bool eventFilter(QObject* obj, QEvent* ev) override;
-
-    // Has the first paint happened? TrayApp keeps the window hidden from the
-    // compositor on Windows until it has.
-    bool hasPainted() const { return m_painted; }
 
 private:
     // ----- Drag state machine (Spec 3 §2.4) -----
